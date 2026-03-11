@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Would You Rather: Chaos Edition 💥</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:ital,wght@0,400;0,600;0,700;0,800;0,900;1,700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="particles"></div>
+<div id="cursor-glow"></div>
+
+<!-- ====== AGE GATE ====== -->
+<div id="screen-agegate" class="screen active">
+  <div class="agegate-inner">
+    <div class="agegate-emoji">🔞</div>
+    <h1 class="agegate-title">HEADS UP</h1>
+    <p class="agegate-text">This game includes adult categories that are intended for players <strong>18+</strong>. Please confirm your age to unlock all content.</p>
+    <div class="agegate-btns">
+      <button class="btn-age-yes" onclick="confirmAge()">I'm 18+ — Let's Go 🔥</button>
+      <button class="btn-age-no" onclick="denyAge()">I'm Under 18</button>
+    </div>
+  </div>
+</div>
+
+<!-- ====== TITLE SCREEN ====== -->
+<div id="screen-title" class="screen">
+  <div class="title-bg-effects">
+    <div class="title-orb orb1"></div>
+    <div class="title-orb orb2"></div>
+    <div class="title-orb orb3"></div>
+  </div>
+
+  <div class="title-content">
+    <div class="title-badge">✦ DELUXE CHAOS EDITION ✦</div>
+    <h1 class="game-title">WOULD<br><span class="you-text">YOU</span><br>RATHER</h1>
+    <div class="title-skull">☠</div>
+    <div class="title-sub">CHAOS EDITION</div>
+
+    <div class="title-features">
+      <div class="feature-pill"><span>💑</span> Couple Prompts</div>
+      <div class="feature-pill"><span>🌶️</span> Spicy Mode</div>
+      <div class="feature-pill"><span>🔞</span> Naughty Mode</div>
+      <div class="feature-pill"><span>🎰</span> Punishments</div>
+      <div class="feature-pill"><span>🃏</span> Bonus Cards</div>
+      <div class="feature-pill"><span>🎡</span> Chaos Wheel</div>
+      <div class="feature-pill"><span>🏆</span> Leaderboard</div>
+      <div class="feature-pill"><span>💀</span> 120+ Prompts</div>
+    </div>
+
+    <div class="player-setup">
+      <h3 class="setup-label">⚡ PLAYERS</h3>
+      <div class="input-row">
+        <div class="player-avatar p1">💘</div>
+        <input class="name-input" id="p1name" type="text" placeholder="Player 1…" maxlength="18">
+      </div>
+      <div class="input-row">
+        <div class="player-avatar p2">💙</div>
+        <input class="name-input" id="p2name" type="text" placeholder="Player 2…" maxlength="18">
+      </div>
+
+      <h3 class="setup-label" style="margin-top:24px;">🎯 CATEGORIES</h3>
+      <div class="category-grid" id="catGrid">
+        <button class="cat-btn selected" data-cat="couple"     onclick="toggleCat(this)"><span>💑</span> Couple Life</button>
+        <button class="cat-btn selected" data-cat="spicy"      onclick="toggleCat(this)"><span>🌶️</span> Spicy</button>
+        <button class="cat-btn selected" data-cat="silly"      onclick="toggleCat(this)"><span>🤪</span> Silly &amp; Fun</button>
+        <button class="cat-btn selected" data-cat="deep"       onclick="toggleCat(this)"><span>💭</span> Deep Thoughts</button>
+        <button class="cat-btn selected" data-cat="chaos"      onclick="toggleCat(this)"><span>💥</span> Pure Chaos</button>
+        <button class="cat-btn selected" data-cat="dare"       onclick="toggleCat(this)"><span>🎯</span> Dare Mode</button>
+        <button class="cat-btn naughty-cat selected" data-cat="naughty" onclick="toggleCat(this)"><span>🔥</span> Naughty 🔞</button>
+        <button class="cat-btn naughty-cat selected" data-cat="horny"   onclick="toggleCat(this)"><span>😈</span> After Dark 🔞</button>
+      </div>
+
+      <h3 class="setup-label" style="margin-top:22px;">🎲 ROUNDS</h3>
+      <div class="rounds-row">
+        <button class="round-btn selected" data-rounds="10" onclick="selectRounds(this)">10</button>
+        <button class="round-btn" data-rounds="20" onclick="selectRounds(this)">20</button>
+        <button class="round-btn" data-rounds="30" onclick="selectRounds(this)">30</button>
+        <button class="round-btn" data-rounds="50" onclick="selectRounds(this)">50 💀</button>
+      </div>
+    </div>
+
+    <button class="btn-start" onclick="startGame()">
+      <span class="btn-start-inner">💥 START THE CHAOS</span>
+    </button>
+    <p class="start-hint">Both players tap their choice — debate it — award the point!</p>
+  </div>
+</div>
+
+<!-- ====== GAME SCREEN ====== -->
+<div id="screen-game" class="screen">
+  <div class="game-header">
+    <div class="score-wrap">
+      <div class="score-card p1-card" id="scoreCard1">
+        <div class="sc-avatar">💘</div>
+        <div class="sc-info">
+          <div class="sc-name" id="hdr-p1">P1</div>
+          <div class="sc-score" id="score-p1">0</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="round-center">
+      <div class="round-label-txt">ROUND</div>
+      <div class="round-display"><span id="cur-round">1</span><span class="round-slash">/</span><span id="total-rounds">10</span></div>
+      <div class="progress-wrap"><div class="progress-fill" id="progress-fill"></div></div>
+      <button class="wheel-trigger-btn" onclick="openSpinner()">🎡 CHAOS WHEEL</button>
+    </div>
+
+    <div class="score-wrap">
+      <div class="score-card p2-card" id="scoreCard2">
+        <div class="sc-info" style="text-align:right;">
+          <div class="sc-name" id="hdr-p2">P2</div>
+          <div class="sc-score" id="score-p2">0</div>
+        </div>
+        <div class="sc-avatar">💙</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="game-content" id="gameContent"></div>
+</div>
+
+<!-- ====== END SCREEN ====== -->
+<div id="screen-end" class="screen">
+  <div class="end-bg">
+    <div class="end-orb e1"></div>
+    <div class="end-orb e2"></div>
+  </div>
+  <div class="end-content">
+    <div class="end-trophy-wrap">
+      <div class="end-trophy" id="end-trophy">🏆</div>
+      <div class="end-confetti-ring"></div>
+    </div>
+    <div class="end-title" id="end-title">GAME OVER!</div>
+    <div class="end-sub" id="end-sub">The chaos has ended… for now.</div>
+
+    <div class="final-scores" id="final-scores"></div>
+
+    <div class="stats-grid" id="stats-grid"></div>
+
+    <div class="chaos-log-card">
+      <div class="chaos-log-title">📜 CHAOS CHRONICLE</div>
+      <div id="chaos-log-items"></div>
+    </div>
+
+    <div class="end-btns">
+      <button class="btn-play-again" onclick="location.reload()">🔄 PLAY AGAIN</button>
+      <button class="btn-view-scores" onclick="openLeaderboard()">🏅 LEADERBOARD</button>
+    </div>
+  </div>
+</div>
+
+<!-- ====== CHAOS WHEEL OVERLAY ====== -->
+<div class="overlay" id="spinnerOverlay">
+  <div class="overlay-inner spinner-inner">
+    <div class="overlay-title">🎡 THE CHAOS WHEEL</div>
+    <div class="overlay-sub" id="spinnerSubtitle">Spin to seal your fate!</div>
+    <div class="wheel-wrap">
+      <canvas id="wheelCanvas" width="320" height="320"></canvas>
+      <div class="wheel-pointer-pin">▼</div>
+      <div class="wheel-center-hub">💀</div>
+    </div>
+    <button class="spin-btn" id="spinBtn" onclick="spinWheel()">⚡ SPIN!</button>
+    <div class="spin-result" id="spinResult"></div>
+    <button class="btn-close-overlay" id="closeSpinner" onclick="closeSpinner()" style="display:none;">Continue ➜</button>
+  </div>
+</div>
+
+<!-- ====== BONUS CARD OVERLAY ====== -->
+<div class="overlay" id="bonusOverlay">
+  <div class="bonus-card-big">
+    <div class="bonus-shimmer"></div>
+    <div class="bonus-corner tl">✦</div>
+    <div class="bonus-corner tr">✦</div>
+    <div class="bonus-corner bl">✦</div>
+    <div class="bonus-corner br">✦</div>
+    <div class="bonus-top-tag">✦ SECRET BONUS CARD ✦</div>
+    <span class="bonus-icon-big" id="bonusIcon">🃏</span>
+    <div class="bonus-name" id="bonusName">MYSTERY</div>
+    <div class="bonus-desc" id="bonusDesc">…</div>
+    <button class="btn-claim-bonus" onclick="closeBonusCard()">CLAIM IT! 🎉</button>
+  </div>
+</div>
+
+<!-- ====== LEADERBOARD OVERLAY ====== -->
+<div class="overlay" id="leaderboardOverlay">
+  <div class="overlay-inner lb-inner">
+    <div class="overlay-title">🏆 HALL OF CHAOS</div>
+    <div id="lb-entries"></div>
+    <button class="btn-close-overlay" onclick="closeLeaderboard()">Close ✕</button>
+  </div>
+</div>
+
+<!-- ====== PUNISHMENT OVERLAY ====== -->
+<div class="overlay" id="punishOverlay">
+  <div class="overlay-inner punish-inner">
+    <div class="punish-header">
+      <div class="punish-icon" id="punishIcon">💀</div>
+      <div class="overlay-title" style="color:var(--purple);">PUNISHMENT!</div>
+    </div>
+    <div class="punish-player" id="punishPlayer"></div>
+    <div class="punish-text" id="punishText"></div>
+    <div class="punish-timer-bar"><div class="punish-timer-fill" id="punishTimerFill"></div></div>
+    <button class="btn-close-overlay" onclick="closePunishment()">Done ✓</button>
+  </div>
+</div>
+
+<!-- ====== TOAST ====== -->
+<div class="toast" id="toast"></div>
+
+<script src="data.js"></script>
+<script src="wheel.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
