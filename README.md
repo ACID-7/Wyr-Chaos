@@ -57,6 +57,25 @@ window.WYR_CHAOS_CONFIG = {
 };
 ```
 
+## Render Backend
+
+This repo now includes [render.yaml](b:/Projects/wyr-chaos/render.yaml) for the multiplayer backend.
+
+Deployment steps:
+
+1. Create a new Web Service on Render from this GitHub repo.
+2. Render should detect `render.yaml` automatically.
+3. Deploy the service and copy its public URL, for example `https://wyr-chaos-multiplayer.onrender.com`.
+4. Update [config.js](b:/Projects/wyr-chaos/config.js) so:
+
+```js
+window.WYR_CHAOS_CONFIG = {
+  websocketUrl: 'wss://wyr-chaos-multiplayer.onrender.com'
+};
+```
+
+5. Redeploy your Netlify frontend.
+
 ## Gameplay
 
 1. Confirm age to unlock the full game.

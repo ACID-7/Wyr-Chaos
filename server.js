@@ -84,6 +84,11 @@ function leaveRoom(socket) {
 
 const server = http.createServer((req, res) => {
   const safePath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+  if (safePath === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
   const resolvedPath = path.normalize(path.join(ROOT, safePath));
 
   if (!resolvedPath.startsWith(ROOT)) {

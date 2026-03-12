@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: wyr-chaos-multiplayer
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
