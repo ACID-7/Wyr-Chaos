@@ -5,13 +5,13 @@ Wyr-Chaos is a browser-based "Would You Rather" party game with local pass-and-p
 ## Features
 
 - Two-player local play
-- Online room-based multiplayer over WebSockets
+- Online room-based multiplayer over Firebase Realtime Database
 - Configurable round counts
 - Multiple prompt categories, including adult-only sets
 - Chaos Wheel event overlay
 - Bonus cards and punishment rounds
 - Local leaderboard/history stored in browser `localStorage`
-- Static frontend plus lightweight Node/WebSocket server
+- Static frontend with Firebase-powered realtime sync
 
 ## Project Structure
 
@@ -20,61 +20,70 @@ Wyr-Chaos is a browser-based "Would You Rather" party game with local pass-and-p
 - `game.js` - game flow, scoring, overlays, leaderboard logic
 - `wheel.js` - animated wheel rendering and spin resolution
 - `data.js` - questions, punishments, bonus cards, wheel segments
-- `online.js` - online room flow and client-side sync
-- `server.js` - static file server and WebSocket relay
-- `package.json` - Node dependencies and start script
+- `online.js` - Firebase multiplayer room flow and client-side sync
+- `config.js` - Firebase project configuration for the frontend
 
 ## Run Locally
 
-Install dependencies and start the app with Node:
+Serve the project with any static server:
 
 ```bash
-npm install
-npm start
+python -m http.server 8000
 ```
 
-Then open `http://localhost:3000`.
+Then open `http://localhost:8000`.
 
 Notes:
 
 - Opening `index.html` directly still works for local pass-and-play only.
-- Online multiplayer requires the Node server because the browser clients connect through WebSockets.
-- For Netlify hosting, deploy the frontend there and point `config.js` at a separate WebSocket backend URL.
+- Online multiplayer requires a Firebase project and Realtime Database.
+- For Netlify hosting, deploy the frontend there and fill in `config.js` with your Firebase config.
+
+## Firebase Setup
+
+1. Create a Firebase project.
+2. Add a Web App to the project.
+3. Enable Realtime Database.
+4. Copy your Firebase web config into `config.js`.
+
+Example:
+
+```js
+window.WYR_CHAOS_CONFIG = {
+  firebase: {
+    apiKey: '...',
+    authDomain: '...',
+    databaseURL: 'https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com',
+    projectId: '...',
+    storageBucket: '...',
+    messagingSenderId: '...',
+    appId: '...'
+  }
+};
+```
+
+Suggested Realtime Database rules for a simple two-player public game prototype:
+
+```json
+{
+  "rules": {
+    "rooms": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}
+```
+
+Tighten these rules before using the app at scale.
 
 ## Netlify
 
-Netlify can host the frontend, but it cannot run the long-lived WebSocket relay in `server.js`.
-
-To use Netlify:
+Netlify can host the frontend directly.
 
 1. Deploy this repo as a static site.
-2. Host `server.js` on a Node-capable platform such as Render, Railway, Fly.io, or a VPS.
-3. Edit `config.js` so `websocketUrl` points to that backend, for example:
-
-```js
-window.WYR_CHAOS_CONFIG = {
-  websocketUrl: 'wss://your-backend.example.com'
-};
-```
-
-## Render Backend
-
-This repo now includes [render.yaml](b:/Projects/wyr-chaos/render.yaml) for the multiplayer backend.
-
-Deployment steps:
-
-1. Create a new Web Service on Render from this GitHub repo.
-2. Render should detect `render.yaml` automatically.
-3. Deploy the service and copy its public URL, for example `https://wyr-chaos-multiplayer.onrender.com`.
-4. Update [config.js](b:/Projects/wyr-chaos/config.js) so:
-
-```js
-window.WYR_CHAOS_CONFIG = {
-  websocketUrl: 'wss://wyr-chaos-multiplayer.onrender.com'
-};
-```
-
-5. Redeploy your Netlify frontend.
+2. Update `config.js` with your Firebase config.
+3. Redeploy.
 
 ## Gameplay
 

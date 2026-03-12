@@ -1,18 +1,22 @@
 /* ============================================================
-   online.js - room-based online multiplayer relay client
+   online.js - Firebase room-based online multiplayer
    ============================================================ */
 
 const onlineState = {
   mode: 'local',
-  socket: null,
-  connected: false,
-  connecting: false,
+  firebaseReady: false,
+  db: null,
+  roomRef: null,
+  roomListener: null,
+  actionsListener: null,
   roomCode: '',
   isHost: false,
   playerNumber: null,
-  applyingRemote: false,
+  clientId: `client_${Math.random().toString(36).slice(2, 10)}`,
   guestConnected: false,
-  serverStatus: 'Online mode is off.',
+  applyingRemote: false,
+  lastGuestActionKey: null,
+  status: 'Online mode is off.',
 };
 
 const originalShowScreen = showScreen;
@@ -42,7 +46,7 @@ function isOnlineMode() {
 }
 
 function isConnectedOnline() {
-  return isOnlineMode() && onlineState.connected && !!onlineState.roomCode;
+  return isOnlineMode() && !!onlineState.roomCode && !!onlineState.roomRef;
 }
 
 function getOnlineNameInput() {
@@ -57,26 +61,28 @@ function normalizeRoomCode(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function randomRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
 function getOwnOnlineName() {
   return getOnlineNameInput().value.trim();
 }
 
-function getSocketUrl() {
-  const configured = window.WYR_CHAOS_CONFIG?.websocketUrl?.trim();
-  if (configured) return configured;
-
-  if (location.protocol === 'http:' || location.protocol === 'https:') {
-    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${protocol}//${location.host}`;
-    }
-    return null;
-  }
-  return null;
-}
-
 function cloneStateSnapshot() {
   return JSON.parse(JSON.stringify(state));
+}
+
+function applyClonedState(snapshotState) {
+  const clone = JSON.parse(JSON.stringify(snapshotState));
+  Object.keys(state).forEach((key) => {
+    if (clone[key] !== undefined) state[key] = clone[key];
+  });
 }
 
 function getActiveScreenId() {
@@ -104,11 +110,10 @@ function buildUiSnapshot() {
   };
 }
 
-function applyClonedState(snapshotState) {
-  const clone = JSON.parse(JSON.stringify(snapshotState));
-  Object.keys(state).forEach((key) => {
-    if (clone[key] !== undefined) state[key] = clone[key];
-  });
+function updateOnlineStatus(message) {
+  onlineState.status = message;
+  document.getElementById('onlineStatus').textContent = message;
+  document.getElementById('roomCodeDisplay').textContent = onlineState.roomCode || '------';
 }
 
 function syncSetupFieldsForMode() {
@@ -122,41 +127,22 @@ function syncSetupFieldsForMode() {
     p2.readOnly = false;
     p1.disabled = false;
     p2.disabled = false;
+    onlineName.disabled = false;
+    roomCode.disabled = false;
     syncSetupInputs();
     return;
   }
 
-  p1.value = state.p1 || '';
-  p2.value = state.p2 || '';
   p1.readOnly = true;
   p2.readOnly = true;
   p1.disabled = true;
   p2.disabled = true;
 
-  onlineName.disabled = onlineState.connected;
-  roomCode.disabled = onlineState.connected;
+  p1.value = state.p1 || '';
+  p2.value = state.p2 || '';
   roomCode.value = onlineState.roomCode || roomCode.value;
-}
-
-function updateModeUI() {
-  document.querySelectorAll('.mode-btn').forEach((button) => {
-    button.classList.toggle('selected', button.dataset.mode === onlineState.mode);
-  });
-
-  const panel = document.getElementById('onlinePanel');
-  panel.classList.toggle('show', isOnlineMode());
-  syncSetupFieldsForMode();
-  updateOnlineStatus(onlineState.serverStatus);
-  updateStartButtonState();
-  syncOnlineDomState();
-}
-
-function updateOnlineStatus(message) {
-  onlineState.serverStatus = message;
-  const status = document.getElementById('onlineStatus');
-  const roomCodeDisplay = document.getElementById('roomCodeDisplay');
-  status.textContent = message;
-  roomCodeDisplay.textContent = onlineState.roomCode || '------';
+  onlineName.disabled = isConnectedOnline();
+  roomCode.disabled = isConnectedOnline();
 }
 
 function updateStartButtonState() {
@@ -169,9 +155,15 @@ function updateStartButtonState() {
     return;
   }
 
-  if (!onlineState.connected) {
+  if (!onlineState.firebaseReady) {
     button.disabled = true;
-    inner.textContent = 'CONNECT ONLINE FIRST';
+    inner.textContent = 'SET FIREBASE CONFIG';
+    return;
+  }
+
+  if (!isConnectedOnline()) {
+    button.disabled = true;
+    inner.textContent = 'CREATE OR JOIN ROOM';
     return;
   }
 
@@ -195,19 +187,19 @@ function syncOnlineDomState() {
   const wheelButton = document.querySelector('.wheel-trigger-btn');
   if (wheelButton) wheelButton.disabled = isConnectedOnline() && !onlineState.isHost;
 
-  const hostOnly = [
+  const hostOnlyNodes = [
     ...document.querySelectorAll('.award-btn'),
     ...document.querySelectorAll('.btn-reveal-bonus'),
     ...document.querySelectorAll('.punish-action'),
     ...document.querySelectorAll('.round-tool-btn'),
   ];
 
-  hostOnly.forEach((element) => {
+  hostOnlyNodes.forEach((node) => {
     if (!isConnectedOnline()) {
-      element.disabled = false;
+      node.disabled = false;
       return;
     }
-    element.disabled = !onlineState.isHost;
+    node.disabled = !onlineState.isHost;
   });
 
   if (isConnectedOnline()) {
@@ -222,173 +214,130 @@ function syncOnlineDomState() {
   }
 }
 
-function sendSocketMessage(type, payload = {}) {
-  if (!onlineState.socket || onlineState.socket.readyState !== WebSocket.OPEN) return;
-  onlineState.socket.send(JSON.stringify({ type, payload }));
+function updateModeUI() {
+  document.querySelectorAll('.mode-btn').forEach((button) => {
+    button.classList.toggle('selected', button.dataset.mode === onlineState.mode);
+  });
+  document.getElementById('onlinePanel').classList.toggle('show', isOnlineMode());
+  syncSetupFieldsForMode();
+  updateOnlineStatus(onlineState.status);
+  updateStartButtonState();
+  syncOnlineDomState();
+}
+
+function ensureFirebaseReady() {
+  const cfg = window.WYR_CHAOS_CONFIG?.firebase;
+  const required = ['apiKey', 'authDomain', 'databaseURL', 'projectId', 'appId'];
+  if (!cfg || required.some((key) => !cfg[key])) {
+    updateOnlineStatus('Add your Firebase config in config.js.');
+    updateStartButtonState();
+    return false;
+  }
+
+  if (!firebase.apps.length) firebase.initializeApp(cfg);
+  onlineState.db = firebase.database();
+  onlineState.firebaseReady = true;
+  return true;
+}
+
+function roomPath(roomCode) {
+  return `rooms/${roomCode}`;
+}
+
+function writeRoomData(data) {
+  if (!onlineState.roomRef) return Promise.resolve();
+  return onlineState.roomRef.update(data);
 }
 
 function maybeSendLobbyUpdate() {
   if (!isConnectedOnline() || !onlineState.isHost || onlineState.applyingRemote) return;
-  sendSocketMessage('lobby_update', {
+  writeRoomData({
     hostName: state.p1,
     guestName: state.p2,
     totalRounds: state.totalRounds,
     selectedCats: state.selectedCats,
     safeMode: state.safeMode,
     ageConfirmed: state.ageConfirmed,
+    updatedAt: firebase.database.ServerValue.TIMESTAMP,
   });
 }
 
 function maybeSendHostSnapshot() {
   if (!isConnectedOnline() || !onlineState.isHost || onlineState.applyingRemote) return;
-  sendSocketMessage('host_sync', {
-    state: cloneStateSnapshot(),
-    ui: buildUiSnapshot(),
+  writeRoomData({
+    hostSync: {
+      state: cloneStateSnapshot(),
+      ui: buildUiSnapshot(),
+      version: Date.now(),
+    },
+    updatedAt: firebase.database.ServerValue.TIMESTAMP,
   });
 }
 
-function connectSocket(onOpenAction) {
-  const url = getSocketUrl();
-  if (!url) {
-    showToast('Set window.WYR_CHAOS_CONFIG.websocketUrl to your realtime backend URL.');
-    updateOnlineStatus('No multiplayer backend configured.');
-    return;
-  }
-  if (onlineState.socket && onlineState.socket.readyState === WebSocket.OPEN) {
-    onOpenAction();
-    return;
-  }
-  if (onlineState.connecting) return;
+function attachRoomListeners() {
+  detachRoomListeners();
+  if (!onlineState.roomRef) return;
 
-  onlineState.connecting = true;
-  updateOnlineStatus('Connecting to multiplayer server...');
+  onlineState.roomListener = onlineState.roomRef.on('value', (snapshot) => {
+    const room = snapshot.val();
+    if (!room) {
+      updateOnlineStatus('Room closed.');
+      leaveOnlineRoom(false);
+      return;
+    }
 
-  const socket = new WebSocket(url);
-  onlineState.socket = socket;
+    onlineState.guestConnected = !!room.guestId;
 
-  socket.addEventListener('open', () => {
-    onlineState.connecting = false;
-    onlineState.connected = true;
-    onOpenAction();
-  });
+    if (onlineState.isHost) {
+      state.p1 = room.hostName || state.p1;
+      state.p2 = room.guestName || 'Waiting for player';
+      syncSetupFieldsForMode();
+      updateStartButtonState();
+      syncOnlineDomState();
+      return;
+    }
 
-  socket.addEventListener('message', (event) => {
-    const message = JSON.parse(event.data);
-    handleSocketMessage(message);
-  });
+    state.p1 = room.hostName || state.p1;
+    state.p2 = room.guestName || state.p2;
+    state.totalRounds = room.totalRounds || state.totalRounds;
+    state.selectedCats = room.selectedCats || state.selectedCats;
+    state.safeMode = !!room.safeMode;
+    state.ageConfirmed = !!room.ageConfirmed;
 
-  socket.addEventListener('close', () => {
-    const hadRoom = !!onlineState.roomCode;
-    onlineState.socket = null;
-    onlineState.connected = false;
-    onlineState.connecting = false;
-    onlineState.roomCode = '';
-    onlineState.isHost = false;
-    onlineState.playerNumber = null;
-    onlineState.guestConnected = false;
-    if (isOnlineMode()) {
-      updateOnlineStatus(hadRoom ? 'Disconnected from room.' : 'Online mode is ready.');
-      updateModeUI();
+    syncRoundsUI();
+    syncCategoryUI();
+    syncContentModePill();
+    syncSetupFieldsForMode();
+    updateStartButtonState();
+
+    if (room.hostSync && room.hostSync.version) {
+      applyRemoteSnapshot(room.hostSync);
     }
   });
 
-  socket.addEventListener('error', () => {
-    updateOnlineStatus('Could not connect to the multiplayer server.');
-  });
+  if (onlineState.isHost) {
+    onlineState.actionsListener = onlineState.roomRef.child('guestActions').on('child_added', (snapshot) => {
+      if (snapshot.key === onlineState.lastGuestActionKey) return;
+      onlineState.lastGuestActionKey = snapshot.key;
+      handleGuestAction(snapshot.val());
+    });
+  }
 }
 
-function handleSocketMessage(message) {
-  const { type, payload } = message;
-
-  switch (type) {
-    case 'room_created':
-      onlineState.roomCode = payload.roomCode;
-      onlineState.isHost = true;
-      onlineState.playerNumber = PLAYER_ONE;
-      onlineState.guestConnected = false;
-      state.p1 = payload.playerName;
-      state.p2 = 'Waiting for player';
-      persistSettings();
-      syncSetupFieldsForMode();
-      updateOnlineStatus(`Room created. Share code ${payload.roomCode}.`);
-      updateStartButtonState();
-      maybeSendLobbyUpdate();
-      break;
-
-    case 'room_joined':
-      onlineState.roomCode = payload.roomCode;
-      onlineState.isHost = false;
-      onlineState.playerNumber = PLAYER_TWO;
-      onlineState.guestConnected = true;
-      state.p1 = payload.hostName;
-      state.p2 = payload.playerName;
-      persistSettings();
-      syncSetupFieldsForMode();
-      updateOnlineStatus(`Joined room ${payload.roomCode}. Waiting for the host.`);
-      updateStartButtonState();
-      break;
-
-    case 'peer_joined':
-      onlineState.guestConnected = true;
-      state.p2 = payload.guestName;
-      persistSettings();
-      syncSetupFieldsForMode();
-      updateOnlineStatus(`Player joined. Room ${onlineState.roomCode} is ready.`);
-      updateStartButtonState();
-      maybeSendLobbyUpdate();
-      break;
-
-    case 'peer_left':
-      if (onlineState.isHost) {
-        onlineState.guestConnected = false;
-        state.p2 = 'Waiting for player';
-        updateOnlineStatus('Guest disconnected. Waiting for a new player.');
-        originalShowScreen('screen-title');
-        maybeSendLobbyUpdate();
-      } else {
-        updateOnlineStatus('Host disconnected. Room closed.');
-        showToast('The host left the match.');
-        leaveOnlineRoom(false);
-      }
-      syncSetupFieldsForMode();
-      updateStartButtonState();
-      break;
-
-    case 'lobby_update':
-      if (!onlineState.isHost) {
-        state.p1 = payload.hostName;
-        state.p2 = payload.guestName || state.p2;
-        state.totalRounds = payload.totalRounds;
-        state.selectedCats = payload.selectedCats;
-        state.safeMode = payload.safeMode;
-        state.ageConfirmed = payload.ageConfirmed;
-        syncRoundsUI();
-        syncCategoryUI();
-        syncContentModePill();
-        syncSetupFieldsForMode();
-        updateStartButtonState();
-      }
-      break;
-
-    case 'host_sync':
-      applyRemoteSnapshot(payload);
-      break;
-
-    case 'guest_action':
-      if (onlineState.isHost) handleGuestAction(payload);
-      break;
-
-    case 'error':
-      showToast(payload.message);
-      updateOnlineStatus(payload.message);
-      break;
-
-    default:
-      break;
+function detachRoomListeners() {
+  if (onlineState.roomRef && onlineState.roomListener) {
+    onlineState.roomRef.off('value', onlineState.roomListener);
+    onlineState.roomListener = null;
+  }
+  if (onlineState.roomRef && onlineState.actionsListener) {
+    onlineState.roomRef.child('guestActions').off('child_added', onlineState.actionsListener);
+    onlineState.actionsListener = null;
   }
 }
 
 function applyRemoteSnapshot(snapshot) {
+  if (onlineState.isHost) return;
+
   onlineState.applyingRemote = true;
   applyClonedState(snapshot.state);
 
@@ -407,33 +356,26 @@ function applyRemoteSnapshot(snapshot) {
     syncSetupFieldsForMode();
   }
 
-  applyOverlaySnapshot(snapshot.ui.overlays);
+  const overlays = snapshot.ui.overlays;
+  document.getElementById('bonusOverlay').classList.toggle('show', !!overlays.bonus);
+  document.getElementById('punishOverlay').classList.toggle('show', !!overlays.punishment.show);
+  document.getElementById('punishIcon').textContent = overlays.punishment.icon || '💀';
+  document.getElementById('punishPlayer').textContent = overlays.punishment.player || '';
+  document.getElementById('punishText').textContent = overlays.punishment.text || '';
+  document.getElementById('spinnerOverlay').classList.toggle('show', !!overlays.spinner.show);
+  document.getElementById('spinResult').innerHTML = overlays.spinner.resultHtml || '';
+  document.getElementById('spinResult').classList.toggle('show', !!overlays.spinner.resultHtml);
+  document.getElementById('closeSpinner').style.display = overlays.spinner.closeVisible || 'none';
+
   syncOnlineDomState();
   onlineState.applyingRemote = false;
 }
 
-function applyOverlaySnapshot(overlays) {
-  const bonus = document.getElementById('bonusOverlay');
-  const punish = document.getElementById('punishOverlay');
-  const spinner = document.getElementById('spinnerOverlay');
-
-  bonus.classList.toggle('show', !!overlays.bonus);
-
-  punish.classList.toggle('show', !!overlays.punishment.show);
-  document.getElementById('punishIcon').textContent = overlays.punishment.icon || '💀';
-  document.getElementById('punishPlayer').textContent = overlays.punishment.player || '';
-  document.getElementById('punishText').textContent = overlays.punishment.text || '';
-
-  spinner.classList.toggle('show', !!overlays.spinner.show);
-  document.getElementById('spinResult').innerHTML = overlays.spinner.resultHtml || '';
-  document.getElementById('spinResult').classList.toggle('show', !!overlays.spinner.resultHtml);
-  document.getElementById('closeSpinner').style.display = overlays.spinner.closeVisible || 'none';
-}
-
-function handleGuestAction(payload) {
-  switch (payload.action) {
+function handleGuestAction(action) {
+  if (!onlineState.isHost || !action) return;
+  switch (action.type) {
     case 'choose':
-      originalChoose(PLAYER_TWO, payload.side);
+      originalChoose(PLAYER_TWO, action.side);
       maybeSendHostSnapshot();
       break;
     default:
@@ -441,22 +383,60 @@ function handleGuestAction(payload) {
   }
 }
 
-function createOnlineRoom() {
-  const name = getOwnOnlineName();
-  if (!name) {
+async function createOnlineRoom() {
+  if (!ensureFirebaseReady()) return;
+
+  const playerName = getOwnOnlineName();
+  if (!playerName) {
     showToast('Enter your online name first.');
     return;
   }
 
-  connectSocket(() => {
-    sendSocketMessage('create_room', { playerName: name });
+  let roomCode = randomRoomCode();
+  let roomSnapshot = await onlineState.db.ref(roomPath(roomCode)).get();
+  while (roomSnapshot.exists()) {
+    roomCode = randomRoomCode();
+    roomSnapshot = await onlineState.db.ref(roomPath(roomCode)).get();
+  }
+
+  onlineState.roomCode = roomCode;
+  onlineState.isHost = true;
+  onlineState.playerNumber = PLAYER_ONE;
+  onlineState.guestConnected = false;
+  onlineState.roomRef = onlineState.db.ref(roomPath(roomCode));
+
+  await onlineState.roomRef.set({
+    hostId: onlineState.clientId,
+    guestId: null,
+    hostName: playerName,
+    guestName: '',
+    totalRounds: state.totalRounds,
+    selectedCats: state.selectedCats,
+    safeMode: state.safeMode,
+    ageConfirmed: state.ageConfirmed,
+    hostSync: null,
+    createdAt: firebase.database.ServerValue.TIMESTAMP,
+    updatedAt: firebase.database.ServerValue.TIMESTAMP,
   });
+
+  onlineState.roomRef.child('hostId').onDisconnect().remove();
+  onlineState.roomRef.onDisconnect().remove();
+
+  state.p1 = playerName;
+  state.p2 = 'Waiting for player';
+  persistSettings();
+  attachRoomListeners();
+  updateOnlineStatus(`Room created. Share code ${roomCode}.`);
+  updateModeUI();
+  maybeSendLobbyUpdate();
 }
 
-function joinOnlineRoom() {
-  const name = getOwnOnlineName();
+async function joinOnlineRoom() {
+  if (!ensureFirebaseReady()) return;
+
+  const playerName = getOwnOnlineName();
   const roomCode = normalizeRoomCode(getRoomCodeInput().value);
-  if (!name) {
+  if (!playerName) {
     showToast('Enter your online name first.');
     return;
   }
@@ -465,39 +445,77 @@ function joinOnlineRoom() {
     return;
   }
 
-  connectSocket(() => {
-    sendSocketMessage('join_room', { playerName: name, roomCode });
+  const roomRef = onlineState.db.ref(roomPath(roomCode));
+  const snapshot = await roomRef.get();
+  const room = snapshot.val();
+
+  if (!room) {
+    showToast('Room not found.');
+    return;
+  }
+  if (room.guestId && room.guestId !== onlineState.clientId) {
+    showToast('Room is already full.');
+    return;
+  }
+
+  onlineState.roomCode = roomCode;
+  onlineState.isHost = false;
+  onlineState.playerNumber = PLAYER_TWO;
+  onlineState.guestConnected = true;
+  onlineState.roomRef = roomRef;
+
+  await roomRef.update({
+    guestId: onlineState.clientId,
+    guestName: playerName,
+    updatedAt: firebase.database.ServerValue.TIMESTAMP,
   });
+
+  roomRef.child('guestId').onDisconnect().remove();
+  roomRef.child('guestName').onDisconnect().set('');
+
+  state.p1 = room.hostName || 'Host';
+  state.p2 = playerName;
+  persistSettings();
+  attachRoomListeners();
+  updateOnlineStatus(`Joined room ${roomCode}. Waiting for host.`);
+  updateModeUI();
 }
 
-function leaveOnlineRoom(closeSocket = true) {
-  if (onlineState.socket && onlineState.socket.readyState === WebSocket.OPEN) {
-    sendSocketMessage('leave_room');
-  }
-  if (closeSocket && onlineState.socket) {
-    onlineState.socket.close();
+function leaveOnlineRoom(resetMode = false) {
+  detachRoomListeners();
+
+  if (onlineState.roomRef) {
+    if (onlineState.isHost) {
+      onlineState.roomRef.remove();
+    } else {
+      onlineState.roomRef.update({
+        guestId: null,
+        guestName: '',
+        updatedAt: firebase.database.ServerValue.TIMESTAMP,
+      });
+    }
   }
 
-  onlineState.connected = false;
-  onlineState.connecting = false;
+  onlineState.roomRef = null;
   onlineState.roomCode = '';
   onlineState.isHost = false;
   onlineState.playerNumber = null;
   onlineState.guestConnected = false;
-  updateOnlineStatus('Online mode is ready.');
+  onlineState.lastGuestActionKey = null;
+
+  if (resetMode) onlineState.mode = 'local';
+
+  updateOnlineStatus(resetMode ? 'Online mode is off.' : 'Enter your name and create or join a room.');
   updateModeUI();
 }
 
 function setPlayMode(mode) {
   if (mode === onlineState.mode) return;
-
-  if (mode === 'local' && isConnectedOnline()) {
-    leaveOnlineRoom();
-  }
-
+  if (mode === 'local' && isConnectedOnline()) leaveOnlineRoom(true);
   onlineState.mode = mode;
   if (mode === 'online') {
-    updateOnlineStatus('Enter your name and create or join a room.');
+    ensureFirebaseReady();
+    updateOnlineStatus(onlineState.firebaseReady ? 'Enter your name and create or join a room.' : 'Add your Firebase config in config.js.');
   }
   updateModeUI();
 }
@@ -558,23 +576,24 @@ startGame = function patchedStartGame() {
     originalStartGame();
     return;
   }
-
+  if (!onlineState.firebaseReady) {
+    showToast('Add your Firebase config first.');
+    return;
+  }
   if (!isConnectedOnline()) {
     showToast('Create or join a room first.');
     return;
   }
-
   if (!onlineState.isHost) {
     showToast('Only the host can start the match.');
     return;
   }
-
   if (!onlineState.guestConnected) {
-    showToast('Wait for another player to join the room.');
+    showToast('Wait for another player to join.');
     return;
   }
 
-  syncSetupFieldsForMode();
+  state.p1 = getOwnOnlineName() || state.p1;
   originalStartGame();
   maybeSendHostSnapshot();
 };
@@ -595,7 +614,11 @@ choose = function patchedChoose(player, side) {
     originalChoose(player, side);
     maybeSendHostSnapshot();
   } else {
-    sendSocketMessage('guest_action', { action: 'choose', side });
+    onlineState.roomRef.child('guestActions').push({
+      type: 'choose',
+      side,
+      createdAt: firebase.database.ServerValue.TIMESTAMP,
+    });
     showToast('Choice sent to host.');
   }
   syncOnlineDomState();
@@ -603,7 +626,7 @@ choose = function patchedChoose(player, side) {
 
 rerollCurrentQuestion = function patchedRerollCurrentQuestion() {
   if (isConnectedOnline() && !onlineState.isHost) {
-    showToast('Only the host can reroll the question.');
+    showToast('Only the host can reroll.');
     return;
   }
   originalRerollCurrentQuestion();
@@ -685,20 +708,19 @@ endGame = function patchedEndGame() {
 };
 
 (function initOnlineMode() {
-  const onlineName = getOnlineNameInput();
-  const roomCode = getRoomCodeInput();
+  ensureFirebaseReady();
 
-  onlineName.addEventListener('input', () => {
+  getOnlineNameInput().addEventListener('input', () => {
     if (!isConnectedOnline()) return;
     if (onlineState.isHost) {
-      state.p1 = onlineName.value.trim() || 'Host';
+      state.p1 = getOwnOnlineName() || 'Host';
       syncSetupFieldsForMode();
       maybeSendLobbyUpdate();
     }
   });
 
-  roomCode.addEventListener('input', () => {
-    roomCode.value = normalizeRoomCode(roomCode.value);
+  getRoomCodeInput().addEventListener('input', () => {
+    getRoomCodeInput().value = normalizeRoomCode(getRoomCodeInput().value);
   });
 
   updateModeUI();
