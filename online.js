@@ -62,9 +62,15 @@ function getOwnOnlineName() {
 }
 
 function getSocketUrl() {
+  const configured = window.WYR_CHAOS_CONFIG?.websocketUrl?.trim();
+  if (configured) return configured;
+
   if (location.protocol === 'http:' || location.protocol === 'https:') {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${location.host}`;
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${location.host}`;
+    }
+    return null;
   }
   return null;
 }
@@ -244,7 +250,8 @@ function maybeSendHostSnapshot() {
 function connectSocket(onOpenAction) {
   const url = getSocketUrl();
   if (!url) {
-    showToast('Online mode requires the app to run over HTTP or HTTPS.');
+    showToast('Set window.WYR_CHAOS_CONFIG.websocketUrl to your realtime backend URL.');
+    updateOnlineStatus('No multiplayer backend configured.');
     return;
   }
   if (onlineState.socket && onlineState.socket.readyState === WebSocket.OPEN) {

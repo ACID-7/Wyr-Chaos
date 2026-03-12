@@ -39,6 +39,23 @@ Notes:
 
 - Opening `index.html` directly still works for local pass-and-play only.
 - Online multiplayer requires the Node server because the browser clients connect through WebSockets.
+- For Netlify hosting, deploy the frontend there and point `config.js` at a separate WebSocket backend URL.
+
+## Netlify
+
+Netlify can host the frontend, but it cannot run the long-lived WebSocket relay in `server.js`.
+
+To use Netlify:
+
+1. Deploy this repo as a static site.
+2. Host `server.js` on a Node-capable platform such as Render, Railway, Fly.io, or a VPS.
+3. Edit `config.js` so `websocketUrl` points to that backend, for example:
+
+```js
+window.WYR_CHAOS_CONFIG = {
+  websocketUrl: 'wss://your-backend.example.com'
+};
+```
 
 ## Gameplay
 
@@ -54,7 +71,7 @@ Notes:
 
 - Game history is still saved locally in each browser and is not globally synced.
 - Adult categories are included in the default content set.
-- For deployed online multiplayer, use a host that can run Node/WebSocket servers. GitHub Pages alone is not enough.
+- For deployed online multiplayer, use a host that can run Node/WebSocket servers. GitHub Pages and Netlify static hosting alone are not enough.
 
 ## License
 
