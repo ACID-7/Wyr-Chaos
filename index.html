@@ -51,6 +51,32 @@
     </div>
 
     <div class="player-setup">
+      <h3 class="setup-label">MODE</h3>
+      <div class="mode-switch" id="modeSwitch">
+        <button class="mode-btn selected" type="button" data-mode="local" onclick="setPlayMode('local')">Local</button>
+        <button class="mode-btn" type="button" data-mode="online" onclick="setPlayMode('online')">Online</button>
+      </div>
+
+      <div class="online-panel" id="onlinePanel">
+        <div class="online-copy">
+          <div class="online-title">Online Lobby</div>
+          <div class="online-sub">Create a room or join with a code. The host controls setup and scoring.</div>
+        </div>
+        <div class="online-grid">
+          <input class="name-input online-input" id="onlineName" type="text" placeholder="Your online name" maxlength="18">
+          <input class="name-input online-input" id="roomCodeInput" type="text" placeholder="Room code" maxlength="6">
+        </div>
+        <div class="online-actions">
+          <button class="online-btn primary" type="button" onclick="createOnlineRoom()">Create Room</button>
+          <button class="online-btn" type="button" onclick="joinOnlineRoom()">Join Room</button>
+          <button class="online-btn ghost" type="button" onclick="leaveOnlineRoom()">Leave</button>
+        </div>
+        <div class="online-room-card">
+          <div class="online-room-label">Room Code</div>
+          <div class="online-room-code" id="roomCodeDisplay">------</div>
+          <div class="online-room-status" id="onlineStatus">Online mode is off.</div>
+        </div>
+      </div>
       <h3 class="setup-label">⚡ PLAYERS</h3>
       <div class="input-row">
         <div class="player-avatar p1">💘</div>
@@ -226,5 +252,6 @@
 <script src="data.js"></script>
 <script src="wheel.js"></script>
 <script src="game.js"></script>
+<script src="online.js"></script>
 </body>
 </html>
