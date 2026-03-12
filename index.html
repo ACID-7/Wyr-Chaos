@@ -62,6 +62,14 @@
       </div>
 
       <h3 class="setup-label" style="margin-top:24px;">🎯 CATEGORIES</h3>
+      <div class="setup-toolbar">
+        <button class="content-mode-pill" id="contentModePill" type="button" onclick="handleContentModeAction()">Adult mode enabled</button>
+        <div class="preset-row">
+          <button class="preset-btn" type="button" onclick="setCategoryPreset('balanced')">Balanced</button>
+          <button class="preset-btn" type="button" onclick="setCategoryPreset('safe')">Safe Only</button>
+          <button class="preset-btn" type="button" onclick="setCategoryPreset('all')">All Chaos</button>
+        </div>
+      </div>
       <div class="category-grid" id="catGrid">
         <button class="cat-btn selected" data-cat="couple"     onclick="toggleCat(this)"><span>💑</span> Couple Life</button>
         <button class="cat-btn selected" data-cat="spicy"      onclick="toggleCat(this)"><span>🌶️</span> Spicy</button>
@@ -85,7 +93,7 @@
     <button class="btn-start" onclick="startGame()">
       <span class="btn-start-inner">💥 START THE CHAOS</span>
     </button>
-    <p class="start-hint">Both players tap their choice — debate it — award the point!</p>
+    <p class="start-hint">Lock in privately, reveal together, then award the point. Your setup is saved automatically.</p>
   </div>
 </div>
 
@@ -158,6 +166,10 @@
   <div class="overlay-inner spinner-inner">
     <div class="overlay-title">🎡 THE CHAOS WHEEL</div>
     <div class="overlay-sub" id="spinnerSubtitle">Spin to seal your fate!</div>
+    <div class="wheel-player-picker">
+      <button class="wheel-player-btn selected" id="wheel-player-1" type="button" onclick="setWheelPlayer(1)">Player 1</button>
+      <button class="wheel-player-btn" id="wheel-player-2" type="button" onclick="setWheelPlayer(2)">Player 2</button>
+    </div>
     <div class="wheel-wrap">
       <canvas id="wheelCanvas" width="320" height="320"></canvas>
       <div class="wheel-pointer-pin">▼</div>
