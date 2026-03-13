@@ -1,5 +1,5 @@
 /* ============================================================
-   online.js - Firebase room-based online multiplayer
+   online.js - minimal Firebase room-based online multiplayer
    ============================================================ */
 
 const onlineState = {
@@ -8,7 +8,7 @@ const onlineState = {
   db: null,
   roomRef: null,
   roomListener: null,
-  actionsListener: null,
+  guestActionsListener: null,
   roomCode: '',
   isHost: false,
   playerNumber: null,
@@ -49,7 +49,7 @@ function isOnlineMode() {
 }
 
 function isConnectedOnline() {
-  return isOnlineMode() && !!onlineState.roomCode && !!onlineState.roomRef;
+  return isOnlineMode() && !!onlineState.roomRef && !!onlineState.roomCode;
 }
 
 function getOnlineNameInput() {
@@ -67,14 +67,28 @@ function normalizeRoomCode(value) {
 function randomRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
 }
 
 function getOwnOnlineName() {
   return getOnlineNameInput().value.trim();
+}
+
+function getFirebaseErrorMessage(error) {
+  if (!error) return 'unknown error';
+  return error.code || error.message || String(error);
+}
+
+function withFirebaseTimeout(promise, label, timeoutMs = 8000) {
+  let timerId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      reject(new Error(`${label} timed out. Check Firebase Realtime Database setup, rules, and network access.`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timerId));
 }
 
 function cloneStateSnapshot() {
@@ -120,8 +134,10 @@ function buildUiSnapshot() {
 
 function updateOnlineStatus(message) {
   onlineState.status = message;
-  document.getElementById('onlineStatus').textContent = message;
-  document.getElementById('roomCodeDisplay').textContent = onlineState.roomCode || '------';
+  const statusNode = document.getElementById('onlineStatus');
+  const roomCodeNode = document.getElementById('roomCodeDisplay');
+  if (statusNode) statusNode.textContent = message;
+  if (roomCodeNode) roomCodeNode.textContent = onlineState.roomCode || '------';
 }
 
 function syncSetupFieldsForMode() {
@@ -145,7 +161,6 @@ function syncSetupFieldsForMode() {
   p2.readOnly = true;
   p1.disabled = true;
   p2.disabled = true;
-
   p1.value = state.p1 || '';
   p2.value = state.p2 || '';
   roomCode.value = onlineState.roomCode || roomCode.value;
@@ -155,6 +170,7 @@ function syncSetupFieldsForMode() {
 
 function updateStartButtonState() {
   const button = document.querySelector('.btn-start');
+  if (!button) return;
   const inner = button.querySelector('.btn-start-inner');
 
   if (!isOnlineMode()) {
@@ -162,25 +178,21 @@ function updateStartButtonState() {
     inner.textContent = '💥 START THE CHAOS';
     return;
   }
-
   if (!onlineState.firebaseReady) {
     button.disabled = true;
     inner.textContent = 'SET FIREBASE CONFIG';
     return;
   }
-
   if (!isConnectedOnline()) {
     button.disabled = true;
     inner.textContent = 'CREATE OR JOIN ROOM';
     return;
   }
-
   if (!onlineState.isHost) {
     button.disabled = true;
     inner.textContent = 'WAITING FOR HOST';
     return;
   }
-
   if (!onlineState.guestConnected) {
     button.disabled = true;
     inner.textContent = 'WAITING FOR PLAYER';
@@ -210,16 +222,16 @@ function syncOnlineDomState() {
     node.disabled = !onlineState.isHost;
   });
 
-  if (isConnectedOnline()) {
-    [PLAYER_ONE, PLAYER_TWO].forEach((player) => {
-      const panel = document.getElementById(`pick-panel-${player}`);
-      if (!panel) return;
-      const isLocalPanel = player === onlineState.playerNumber;
-      panel.querySelectorAll('button[data-choice]').forEach((button) => {
-        button.disabled = !isLocalPanel || state.currentChoices[player] !== null || state.currentRoundResolved;
-      });
+  if (!isConnectedOnline()) return;
+
+  [PLAYER_ONE, PLAYER_TWO].forEach((player) => {
+    const panel = document.getElementById(`pick-panel-${player}`);
+    if (!panel) return;
+    const isLocalPanel = player === onlineState.playerNumber;
+    panel.querySelectorAll('button[data-choice]').forEach((button) => {
+      button.disabled = !isLocalPanel || state.currentChoices[player] !== null || state.currentRoundResolved;
     });
-  }
+  });
 }
 
 function updateModeUI() {
@@ -234,18 +246,36 @@ function updateModeUI() {
 }
 
 function ensureFirebaseReady() {
-  const cfg = window.WYR_CHAOS_CONFIG?.firebase;
-  const required = ['apiKey', 'authDomain', 'databaseURL', 'projectId', 'appId'];
-  if (!cfg || required.some((key) => !cfg[key])) {
-    updateOnlineStatus('Add your Firebase config in config.js.');
+  try {
+    if (window.location.protocol === 'file:') {
+      updateOnlineStatus('Online mode needs a local server. Open via http://localhost, not file://.');
+      updateStartButtonState();
+      return false;
+    }
+
+    const cfg = window.WYR_CHAOS_CONFIG?.firebase;
+    const required = ['apiKey', 'authDomain', 'databaseURL', 'projectId', 'appId'];
+    if (!cfg || required.some((key) => !cfg[key])) {
+      updateOnlineStatus('Add your Firebase config in config.js.');
+      updateStartButtonState();
+      return false;
+    }
+    if (typeof firebase === 'undefined') {
+      updateOnlineStatus('Firebase scripts failed to load.');
+      updateStartButtonState();
+      return false;
+    }
+
+    if (!firebase.apps.length) firebase.initializeApp(cfg);
+    onlineState.db = firebase.database();
+    onlineState.firebaseReady = true;
+    return true;
+  } catch (error) {
+    onlineState.firebaseReady = false;
+    updateOnlineStatus(`Firebase setup failed: ${getFirebaseErrorMessage(error)}`);
     updateStartButtonState();
     return false;
   }
-
-  if (!firebase.apps.length) firebase.initializeApp(cfg);
-  onlineState.db = firebase.database();
-  onlineState.firebaseReady = true;
-  return true;
 }
 
 function roomPath(roomCode) {
@@ -285,6 +315,95 @@ function maybeSendHostSnapshot() {
   });
 }
 
+function detachRoomListeners() {
+  if (onlineState.roomRef && onlineState.roomListener) {
+    onlineState.roomRef.off('value', onlineState.roomListener);
+    onlineState.roomListener = null;
+  }
+  if (onlineState.roomRef && onlineState.guestActionsListener) {
+    onlineState.roomRef.child('guestActions').off('child_added', onlineState.guestActionsListener);
+    onlineState.guestActionsListener = null;
+  }
+}
+
+function resetOnlineRoomState() {
+  onlineState.roomRef = null;
+  onlineState.roomCode = '';
+  onlineState.isHost = false;
+  onlineState.playerNumber = null;
+  onlineState.guestConnected = false;
+  onlineState.lastAppliedHostSyncVersion = 0;
+}
+
+function applyRemoteSnapshot(snapshot) {
+  if (onlineState.isHost) return;
+  if (!snapshot?.version || snapshot.version <= onlineState.lastAppliedHostSyncVersion) return;
+
+  onlineState.applyingRemote = true;
+  onlineState.lastAppliedHostSyncVersion = snapshot.version;
+  applyClonedState(snapshot.state);
+
+  if (snapshot.ui.screen === 'screen-game') {
+    originalShowScreen('screen-game');
+    updateHeader();
+    renderRound(state.currentQ, state.currentCardType);
+    if (state.currentChoices[PLAYER_ONE] && state.currentChoices[PLAYER_TWO]) showResultArea();
+  } else if (snapshot.ui.screen === 'screen-end') {
+    originalEndGame();
+  } else {
+    originalShowScreen(snapshot.ui.screen);
+    syncRoundsUI();
+    syncGameModeUI();
+    syncCategoryUI();
+    syncContentModePill();
+    syncSetupFieldsForMode();
+  }
+
+  const overlays = snapshot.ui.overlays;
+  document.getElementById('bonusOverlay').classList.toggle('show', !!overlays.bonus?.show);
+  document.getElementById('bonusIcon').textContent = overlays.bonus?.icon || state.pendingBonusCard?.icon || '🃏';
+  document.getElementById('bonusName').textContent = overlays.bonus?.name || state.pendingBonusCard?.name || 'MYSTERY';
+  document.getElementById('bonusDesc').textContent = overlays.bonus?.desc || state.pendingBonusCard?.desc || '...';
+  document.getElementById('punishOverlay').classList.toggle('show', !!overlays.punishment?.show);
+  document.getElementById('punishIcon').textContent = overlays.punishment?.icon || '💀';
+  document.getElementById('punishPlayer').textContent = overlays.punishment?.player || '';
+  document.getElementById('punishText').textContent = overlays.punishment?.text || '';
+  document.getElementById('spinnerOverlay').classList.toggle('show', !!overlays.spinner?.show);
+  document.getElementById('spinResult').innerHTML = overlays.spinner?.resultHtml || '';
+  document.getElementById('spinResult').classList.toggle('show', !!overlays.spinner?.resultHtml);
+  document.getElementById('closeSpinner').style.display = overlays.spinner?.closeVisible || 'none';
+
+  syncOnlineDomState();
+  onlineState.applyingRemote = false;
+}
+
+function handleGuestAction(snapshot) {
+  const action = snapshot?.val();
+  if (!onlineState.isHost || !action) return;
+
+  switch (action.type) {
+    case 'choose': {
+      const player = Number(action.player) === PLAYER_TWO ? PLAYER_TWO : PLAYER_ONE;
+      const actionSessionId = action.sessionId || null;
+      const isCurrentSession = !actionSessionId || actionSessionId === state.gameSessionId;
+      const isCurrentRound = Number(action.roundSequence) === state.roundSequence;
+
+      if (player !== PLAYER_TWO || !isCurrentSession || !isCurrentRound || state.currentRoundResolved || state.currentChoices[player] !== null) {
+        snapshot.ref.remove();
+        return;
+      }
+
+      originalChoose(player, action.side);
+      snapshot.ref.remove();
+      maybeSendHostSnapshot();
+      break;
+    }
+    default:
+      snapshot.ref.remove();
+      break;
+  }
+}
+
 function attachRoomListeners() {
   detachRoomListeners();
   if (!onlineState.roomRef) return;
@@ -292,8 +411,10 @@ function attachRoomListeners() {
   onlineState.roomListener = onlineState.roomRef.on('value', (snapshot) => {
     const room = snapshot.val();
     if (!room) {
+      detachRoomListeners();
+      resetOnlineRoomState();
       updateOnlineStatus('Room closed.');
-      leaveOnlineRoom(false);
+      updateModeUI();
       return;
     }
 
@@ -323,93 +444,13 @@ function attachRoomListeners() {
     syncSetupFieldsForMode();
     updateStartButtonState();
 
-    if (room.hostSync && room.hostSync.version) {
-      applyRemoteSnapshot(room.hostSync);
-    }
+    if (room.hostSync?.version) applyRemoteSnapshot(room.hostSync);
   });
 
   if (onlineState.isHost) {
-    onlineState.actionsListener = onlineState.roomRef.child('guestActions').on('child_added', (snapshot) => {
+    onlineState.guestActionsListener = onlineState.roomRef.child('guestActions').on('child_added', (snapshot) => {
       handleGuestAction(snapshot);
     });
-  }
-}
-
-function detachRoomListeners() {
-  if (onlineState.roomRef && onlineState.roomListener) {
-    onlineState.roomRef.off('value', onlineState.roomListener);
-    onlineState.roomListener = null;
-  }
-  if (onlineState.roomRef && onlineState.actionsListener) {
-    onlineState.roomRef.child('guestActions').off('child_added', onlineState.actionsListener);
-    onlineState.actionsListener = null;
-  }
-}
-
-function applyRemoteSnapshot(snapshot) {
-  if (onlineState.isHost) return;
-  if (!snapshot?.version || snapshot.version <= onlineState.lastAppliedHostSyncVersion) return;
-
-  onlineState.applyingRemote = true;
-  onlineState.lastAppliedHostSyncVersion = snapshot.version;
-  applyClonedState(snapshot.state);
-
-  if (snapshot.ui.screen === 'screen-game') {
-    originalShowScreen('screen-game');
-    updateHeader();
-    renderRound(state.currentQ, state.currentCardType);
-    if (state.currentChoices[PLAYER_ONE] && state.currentChoices[PLAYER_TWO]) showResultArea();
-  } else if (snapshot.ui.screen === 'screen-end') {
-    originalEndGame();
-  } else {
-    originalShowScreen(snapshot.ui.screen);
-    syncRoundsUI();
-    syncCategoryUI();
-    syncContentModePill();
-    syncSetupFieldsForMode();
-  }
-
-  const overlays = snapshot.ui.overlays;
-  document.getElementById('bonusOverlay').classList.toggle('show', !!overlays.bonus?.show);
-  document.getElementById('bonusIcon').textContent = overlays.bonus?.icon || state.pendingBonusCard?.icon || '🃏';
-  document.getElementById('bonusName').textContent = overlays.bonus?.name || state.pendingBonusCard?.name || 'MYSTERY';
-  document.getElementById('bonusDesc').textContent = overlays.bonus?.desc || state.pendingBonusCard?.desc || '...';
-  document.getElementById('punishOverlay').classList.toggle('show', !!overlays.punishment.show);
-  document.getElementById('punishIcon').textContent = overlays.punishment.icon || '💀';
-  document.getElementById('punishPlayer').textContent = overlays.punishment.player || '';
-  document.getElementById('punishText').textContent = overlays.punishment.text || '';
-  document.getElementById('spinnerOverlay').classList.toggle('show', !!overlays.spinner.show);
-  document.getElementById('spinResult').innerHTML = overlays.spinner.resultHtml || '';
-  document.getElementById('spinResult').classList.toggle('show', !!overlays.spinner.resultHtml);
-  document.getElementById('closeSpinner').style.display = overlays.spinner.closeVisible || 'none';
-
-  syncOnlineDomState();
-  onlineState.applyingRemote = false;
-}
-
-function handleGuestAction(snapshot) {
-  const action = snapshot?.val();
-  if (!onlineState.isHost || !action) return;
-  switch (action.type) {
-    case 'choose': {
-      const player = Number(action.player) === PLAYER_TWO ? PLAYER_TWO : PLAYER_ONE;
-      const actionSessionId = action.sessionId || null;
-      const isCurrentSession = !actionSessionId || actionSessionId === state.gameSessionId;
-      const isCurrentRound = Number(action.roundSequence) === state.roundSequence;
-
-      if (player !== PLAYER_TWO || !isCurrentSession || !isCurrentRound || state.currentRoundResolved || state.currentChoices[player] !== null) {
-        snapshot.ref.remove();
-        return;
-      }
-
-      originalChoose(player, action.side);
-      snapshot.ref.remove();
-      maybeSendHostSnapshot();
-      break;
-    }
-    default:
-      snapshot.ref.remove();
-      break;
   }
 }
 
@@ -422,46 +463,63 @@ async function createOnlineRoom() {
     return;
   }
 
-  let roomCode = randomRoomCode();
-  let roomSnapshot = await onlineState.db.ref(roomPath(roomCode)).get();
-  while (roomSnapshot.exists()) {
-    roomCode = randomRoomCode();
-    roomSnapshot = await onlineState.db.ref(roomPath(roomCode)).get();
+  try {
+    updateOnlineStatus('Creating room...');
+
+    let roomCode = randomRoomCode();
+    let existing = await withFirebaseTimeout(
+      onlineState.db.ref(roomPath(roomCode)).get(),
+      'Checking room availability'
+    );
+    while (existing.exists()) {
+      roomCode = randomRoomCode();
+      existing = await withFirebaseTimeout(
+        onlineState.db.ref(roomPath(roomCode)).get(),
+        'Checking room availability'
+      );
+    }
+
+    onlineState.roomCode = roomCode;
+    onlineState.isHost = true;
+    onlineState.playerNumber = PLAYER_ONE;
+    onlineState.guestConnected = false;
+    onlineState.lastAppliedHostSyncVersion = 0;
+    onlineState.roomRef = onlineState.db.ref(roomPath(roomCode));
+
+    await withFirebaseTimeout(onlineState.roomRef.set({
+      hostId: onlineState.clientId,
+      guestId: null,
+      hostName: playerName,
+      guestName: '',
+      totalRounds: state.totalRounds,
+      gameMode: state.gameMode,
+      selectedCats: state.selectedCats,
+      safeMode: state.safeMode,
+      ageConfirmed: state.ageConfirmed,
+      hostSync: null,
+      guestActions: null,
+      createdAt: firebase.database.ServerValue.TIMESTAMP,
+      updatedAt: firebase.database.ServerValue.TIMESTAMP,
+    }), 'Creating room');
+
+    onlineState.roomRef.onDisconnect().remove();
+    onlineState.roomRef.child('hostId').onDisconnect().remove();
+
+    state.p1 = playerName;
+    state.p2 = 'Waiting for player';
+    persistSettings();
+    attachRoomListeners();
+    updateOnlineStatus(`Room created. Share code ${roomCode}.`);
+    updateModeUI();
+    maybeSendLobbyUpdate();
+  } catch (error) {
+    detachRoomListeners();
+    resetOnlineRoomState();
+    updateModeUI();
+    const message = getFirebaseErrorMessage(error);
+    updateOnlineStatus(`Create room failed: ${message}`);
+    showToast(`Create room failed: ${message}`);
   }
-
-  onlineState.roomCode = roomCode;
-  onlineState.isHost = true;
-  onlineState.playerNumber = PLAYER_ONE;
-  onlineState.guestConnected = false;
-  onlineState.lastAppliedHostSyncVersion = 0;
-  onlineState.roomRef = onlineState.db.ref(roomPath(roomCode));
-
-  await onlineState.roomRef.set({
-    hostId: onlineState.clientId,
-    guestId: null,
-    hostName: playerName,
-    guestName: '',
-    totalRounds: state.totalRounds,
-    gameMode: state.gameMode,
-    selectedCats: state.selectedCats,
-    safeMode: state.safeMode,
-    ageConfirmed: state.ageConfirmed,
-    hostSync: null,
-    guestActions: null,
-    createdAt: firebase.database.ServerValue.TIMESTAMP,
-    updatedAt: firebase.database.ServerValue.TIMESTAMP,
-  });
-
-  onlineState.roomRef.child('hostId').onDisconnect().remove();
-  onlineState.roomRef.onDisconnect().remove();
-
-  state.p1 = playerName;
-  state.p2 = 'Waiting for player';
-  persistSettings();
-  attachRoomListeners();
-  updateOnlineStatus(`Room created. Share code ${roomCode}.`);
-  updateModeUI();
-  maybeSendLobbyUpdate();
 }
 
 async function joinOnlineRoom() {
@@ -478,41 +536,53 @@ async function joinOnlineRoom() {
     return;
   }
 
-  const roomRef = onlineState.db.ref(roomPath(roomCode));
-  const snapshot = await roomRef.get();
-  const room = snapshot.val();
+  try {
+    updateOnlineStatus(`Joining room ${roomCode}...`);
+    const roomRef = onlineState.db.ref(roomPath(roomCode));
+    const snapshot = await withFirebaseTimeout(roomRef.get(), 'Loading room');
+    const room = snapshot.val();
 
-  if (!room) {
-    showToast('Room not found.');
-    return;
+    if (!room) {
+      updateOnlineStatus('Room not found.');
+      showToast('Room not found.');
+      return;
+    }
+    if (room.guestId && room.guestId !== onlineState.clientId) {
+      updateOnlineStatus('Room is already full.');
+      showToast('Room is already full.');
+      return;
+    }
+
+    onlineState.roomCode = roomCode;
+    onlineState.isHost = false;
+    onlineState.playerNumber = PLAYER_TWO;
+    onlineState.guestConnected = true;
+    onlineState.lastAppliedHostSyncVersion = 0;
+    onlineState.roomRef = roomRef;
+
+    await withFirebaseTimeout(roomRef.update({
+      guestId: onlineState.clientId,
+      guestName: playerName,
+      updatedAt: firebase.database.ServerValue.TIMESTAMP,
+    }), 'Joining room');
+
+    roomRef.child('guestId').onDisconnect().remove();
+    roomRef.child('guestName').onDisconnect().set('');
+
+    state.p1 = room.hostName || 'Host';
+    state.p2 = playerName;
+    persistSettings();
+    attachRoomListeners();
+    updateOnlineStatus(`Joined room ${roomCode}. Waiting for host.`);
+    updateModeUI();
+  } catch (error) {
+    detachRoomListeners();
+    resetOnlineRoomState();
+    updateModeUI();
+    const message = getFirebaseErrorMessage(error);
+    updateOnlineStatus(`Join room failed: ${message}`);
+    showToast(`Join room failed: ${message}`);
   }
-  if (room.guestId && room.guestId !== onlineState.clientId) {
-    showToast('Room is already full.');
-    return;
-  }
-
-  onlineState.roomCode = roomCode;
-  onlineState.isHost = false;
-  onlineState.playerNumber = PLAYER_TWO;
-  onlineState.guestConnected = true;
-  onlineState.lastAppliedHostSyncVersion = 0;
-  onlineState.roomRef = roomRef;
-
-  await roomRef.update({
-    guestId: onlineState.clientId,
-    guestName: playerName,
-    updatedAt: firebase.database.ServerValue.TIMESTAMP,
-  });
-
-  roomRef.child('guestId').onDisconnect().remove();
-  roomRef.child('guestName').onDisconnect().set('');
-
-  state.p1 = room.hostName || 'Host';
-  state.p2 = playerName;
-  persistSettings();
-  attachRoomListeners();
-  updateOnlineStatus(`Joined room ${roomCode}. Waiting for host.`);
-  updateModeUI();
 }
 
 function leaveOnlineRoom(resetMode = false) {
@@ -530,13 +600,7 @@ function leaveOnlineRoom(resetMode = false) {
     }
   }
 
-  onlineState.roomRef = null;
-  onlineState.roomCode = '';
-  onlineState.isHost = false;
-  onlineState.playerNumber = null;
-  onlineState.guestConnected = false;
-  onlineState.lastAppliedHostSyncVersion = 0;
-
+  resetOnlineRoomState();
   if (resetMode) onlineState.mode = 'local';
 
   updateOnlineStatus(resetMode ? 'Online mode is off.' : 'Enter your name and create or join a room.');
@@ -545,11 +609,15 @@ function leaveOnlineRoom(resetMode = false) {
 
 function setPlayMode(mode) {
   if (mode === onlineState.mode) return;
-  if (mode === 'local' && isConnectedOnline()) leaveOnlineRoom(true);
+  if (mode === 'local' && isConnectedOnline()) {
+    leaveOnlineRoom(true);
+    return;
+  }
+
   onlineState.mode = mode;
   if (mode === 'online') {
     ensureFirebaseReady();
-    updateOnlineStatus(onlineState.firebaseReady ? 'Enter your name and create or join a room.' : 'Add your Firebase config in config.js.');
+    updateOnlineStatus(onlineState.firebaseReady ? 'Enter your name and create or join a room.' : onlineState.status);
   }
   updateModeUI();
 }
@@ -577,13 +645,12 @@ selectRounds = function patchedSelectRounds(button) {
   maybeSendLobbyUpdate();
 };
 
-confirmAge = function patchedConfirmAge() {
-  originalConfirmAge();
-  maybeSendLobbyUpdate();
-};
-
-denyAge = function patchedDenyAge() {
-  originalDenyAge();
+selectGameMode = function patchedSelectGameMode(button) {
+  if (isConnectedOnline() && !onlineState.isHost) {
+    showToast('Only the host can change game mode.');
+    return;
+  }
+  originalSelectGameMode(button);
   maybeSendLobbyUpdate();
 };
 
@@ -596,21 +663,22 @@ setCategoryPreset = function patchedSetCategoryPreset(preset) {
   maybeSendLobbyUpdate();
 };
 
-selectGameMode = function patchedSelectGameMode(button) {
-  if (isConnectedOnline() && !onlineState.isHost) {
-    showToast('Only the host can change game mode.');
-    return;
-  }
-  originalSelectGameMode(button);
-  maybeSendLobbyUpdate();
-};
-
 randomizeCategories = function patchedRandomizeCategories() {
   if (isConnectedOnline() && !onlineState.isHost) {
     showToast('Only the host can randomize categories.');
     return;
   }
   originalRandomizeCategories();
+  maybeSendLobbyUpdate();
+};
+
+confirmAge = function patchedConfirmAge() {
+  originalConfirmAge();
+  maybeSendLobbyUpdate();
+};
+
+denyAge = function patchedDenyAge() {
+  originalDenyAge();
   maybeSendLobbyUpdate();
 };
 
@@ -629,7 +697,7 @@ startGame = function patchedStartGame() {
     return;
   }
   if (!onlineState.firebaseReady) {
-    showToast('Add your Firebase config first.');
+    showToast('Firebase is not ready.');
     return;
   }
   if (!isConnectedOnline()) {
@@ -672,16 +740,11 @@ choose = function patchedChoose(player, side) {
     syncOnlineDomState();
     return;
   }
-
   if (player !== onlineState.playerNumber) {
     showToast('You can only choose for yourself.');
     return;
   }
-
-  if (state.currentRoundResolved || state.currentChoices[player] !== null) {
-    return;
-  }
-
+  if (state.currentRoundResolved || state.currentChoices[player] !== null) return;
   if (side === SKIP_CHOICE && state.effects.skips[player] <= 0) {
     showToast(`${getPlayerName(player)} has no skips left.`);
     return;
@@ -793,12 +856,10 @@ endGame = function patchedEndGame() {
   ensureFirebaseReady();
 
   getOnlineNameInput().addEventListener('input', () => {
-    if (!isConnectedOnline()) return;
-    if (onlineState.isHost) {
-      state.p1 = getOwnOnlineName() || 'Host';
-      syncSetupFieldsForMode();
-      maybeSendLobbyUpdate();
-    }
+    if (!isConnectedOnline() || !onlineState.isHost) return;
+    state.p1 = getOwnOnlineName() || 'Host';
+    syncSetupFieldsForMode();
+    maybeSendLobbyUpdate();
   });
 
   getRoomCodeInput().addEventListener('input', () => {
