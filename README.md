@@ -20,6 +20,7 @@ Wyr-Chaos is a browser-based "Would You Rather" party game with local pass-and-p
 - `game.js` - game flow, scoring, overlays, leaderboard logic
 - `wheel.js` - animated wheel rendering and spin resolution
 - `data.js` - questions, punishments, bonus cards, wheel segments
+- `custom-content.js` - optional bulk prompt overrides/additions loaded on top of the base question bank
 - `online.js` - Firebase multiplayer room flow and client-side sync
 - `config.js` - Firebase project configuration for the frontend
 
@@ -99,6 +100,7 @@ Netlify can host the frontend directly.
 
 - Game history is still saved locally in each browser and is not globally synced.
 - Adult categories are included in the default content set.
+- To add large custom prompt packs, put them in `custom-content.js`. The app merges those prompts into the built-in categories at load time.
 - For deployed online multiplayer, use a host that can run Node/WebSocket servers. GitHub Pages and Netlify static hosting alone are not enough.
 
 ## License

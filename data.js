@@ -113,6 +113,27 @@ const ALL_QUESTIONS = {
   ],
 };
 
+function mergeQuestionBank(targetBank, incomingBank) {
+  if (!incomingBank || typeof incomingBank !== 'object') return;
+
+  Object.entries(incomingBank).forEach(([category, prompts]) => {
+    if (!Array.isArray(prompts)) return;
+    if (!targetBank[category]) targetBank[category] = [];
+
+    const normalized = prompts
+      .filter((entry) => entry && typeof entry.q === 'string' && typeof entry.a === 'string' && typeof entry.b === 'string')
+      .map((entry) => ({
+        q: entry.q.trim(),
+        a: entry.a.trim(),
+        b: entry.b.trim(),
+        ea: String(entry.ea || 'A').trim(),
+        eb: String(entry.eb || 'B').trim(),
+      }));
+
+    targetBank[category] = targetBank[category].concat(normalized);
+  });
+}
+
 const PUNISHMENTS = [
   { icon: "SONG", txt: "Sing the chorus of any song your partner chooses. Full performance." },
   { icon: "SELFIE", txt: "Take the most unflattering selfie possible and let your partner choose one person to send it to." },
@@ -165,6 +186,10 @@ const WHEEL_SEGMENTS = [
   { label: "Song!", color: "#30D158", punishment: "Sing your partner's name to the tune of the last song you heard." },
   { label: "Kiss!", color: "#FF2D55", punishment: "Give your partner a 5-second kiss wherever you both agree counts." },
 ];
+
+if (window.WYR_CHAOS_CUSTOM_CONTENT?.questions) {
+  mergeQuestionBank(ALL_QUESTIONS, window.WYR_CHAOS_CUSTOM_CONTENT.questions);
+}
 
 const HISTORY_KEY = 'wyr_chaos_history_v2';
 
