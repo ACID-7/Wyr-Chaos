@@ -15,7 +15,7 @@ const onlineState = {
   clientId: `client_${Math.random().toString(36).slice(2, 10)}`,
   guestConnected: false,
   applyingRemote: false,
-  lastGuestActionKey: null,
+  lastAppliedHostSyncVersion: 0,
   status: 'Online mode is off.',
 };
 
@@ -38,6 +38,9 @@ const originalSelectRounds = selectRounds;
 const originalConfirmAge = confirmAge;
 const originalDenyAge = denyAge;
 const originalSetCategoryPreset = setCategoryPreset;
+const originalSelectGameMode = selectGameMode;
+const originalRandomizeCategories = randomizeCategories;
+const originalRematchGame = rematchGame;
 const originalHandleContentModeAction = handleContentModeAction;
 const originalRerollCurrentQuestion = rerollCurrentQuestion;
 
@@ -94,7 +97,12 @@ function buildUiSnapshot() {
   return {
     screen: getActiveScreenId(),
     overlays: {
-      bonus: document.getElementById('bonusOverlay').classList.contains('show'),
+      bonus: {
+        show: document.getElementById('bonusOverlay').classList.contains('show'),
+        icon: document.getElementById('bonusIcon').textContent,
+        name: document.getElementById('bonusName').textContent,
+        desc: document.getElementById('bonusDesc').textContent,
+      },
       punishment: {
         show: document.getElementById('punishOverlay').classList.contains('show'),
         icon: document.getElementById('punishIcon').textContent,
@@ -255,6 +263,7 @@ function maybeSendLobbyUpdate() {
     hostName: state.p1,
     guestName: state.p2,
     totalRounds: state.totalRounds,
+    gameMode: state.gameMode,
     selectedCats: state.selectedCats,
     safeMode: state.safeMode,
     ageConfirmed: state.ageConfirmed,
@@ -269,6 +278,8 @@ function maybeSendHostSnapshot() {
       state: cloneStateSnapshot(),
       ui: buildUiSnapshot(),
       version: Date.now(),
+      sessionId: state.gameSessionId,
+      roundSequence: state.roundSequence,
     },
     updatedAt: firebase.database.ServerValue.TIMESTAMP,
   });
@@ -300,11 +311,13 @@ function attachRoomListeners() {
     state.p1 = room.hostName || state.p1;
     state.p2 = room.guestName || state.p2;
     state.totalRounds = room.totalRounds || state.totalRounds;
+    state.gameMode = GAME_MODES[room.gameMode] ? room.gameMode : state.gameMode;
     state.selectedCats = room.selectedCats || state.selectedCats;
     state.safeMode = !!room.safeMode;
     state.ageConfirmed = !!room.ageConfirmed;
 
     syncRoundsUI();
+    syncGameModeUI();
     syncCategoryUI();
     syncContentModePill();
     syncSetupFieldsForMode();
@@ -317,9 +330,7 @@ function attachRoomListeners() {
 
   if (onlineState.isHost) {
     onlineState.actionsListener = onlineState.roomRef.child('guestActions').on('child_added', (snapshot) => {
-      if (snapshot.key === onlineState.lastGuestActionKey) return;
-      onlineState.lastGuestActionKey = snapshot.key;
-      handleGuestAction(snapshot.val());
+      handleGuestAction(snapshot);
     });
   }
 }
@@ -337,8 +348,10 @@ function detachRoomListeners() {
 
 function applyRemoteSnapshot(snapshot) {
   if (onlineState.isHost) return;
+  if (!snapshot?.version || snapshot.version <= onlineState.lastAppliedHostSyncVersion) return;
 
   onlineState.applyingRemote = true;
+  onlineState.lastAppliedHostSyncVersion = snapshot.version;
   applyClonedState(snapshot.state);
 
   if (snapshot.ui.screen === 'screen-game') {
@@ -357,7 +370,10 @@ function applyRemoteSnapshot(snapshot) {
   }
 
   const overlays = snapshot.ui.overlays;
-  document.getElementById('bonusOverlay').classList.toggle('show', !!overlays.bonus);
+  document.getElementById('bonusOverlay').classList.toggle('show', !!overlays.bonus?.show);
+  document.getElementById('bonusIcon').textContent = overlays.bonus?.icon || state.pendingBonusCard?.icon || '🃏';
+  document.getElementById('bonusName').textContent = overlays.bonus?.name || state.pendingBonusCard?.name || 'MYSTERY';
+  document.getElementById('bonusDesc').textContent = overlays.bonus?.desc || state.pendingBonusCard?.desc || '...';
   document.getElementById('punishOverlay').classList.toggle('show', !!overlays.punishment.show);
   document.getElementById('punishIcon').textContent = overlays.punishment.icon || '💀';
   document.getElementById('punishPlayer').textContent = overlays.punishment.player || '';
@@ -371,14 +387,28 @@ function applyRemoteSnapshot(snapshot) {
   onlineState.applyingRemote = false;
 }
 
-function handleGuestAction(action) {
+function handleGuestAction(snapshot) {
+  const action = snapshot?.val();
   if (!onlineState.isHost || !action) return;
   switch (action.type) {
-    case 'choose':
-      originalChoose(PLAYER_TWO, action.side);
+    case 'choose': {
+      const player = Number(action.player) === PLAYER_TWO ? PLAYER_TWO : PLAYER_ONE;
+      const actionSessionId = action.sessionId || null;
+      const isCurrentSession = !actionSessionId || actionSessionId === state.gameSessionId;
+      const isCurrentRound = Number(action.roundSequence) === state.roundSequence;
+
+      if (player !== PLAYER_TWO || !isCurrentSession || !isCurrentRound || state.currentRoundResolved || state.currentChoices[player] !== null) {
+        snapshot.ref.remove();
+        return;
+      }
+
+      originalChoose(player, action.side);
+      snapshot.ref.remove();
       maybeSendHostSnapshot();
       break;
+    }
     default:
+      snapshot.ref.remove();
       break;
   }
 }
@@ -403,6 +433,7 @@ async function createOnlineRoom() {
   onlineState.isHost = true;
   onlineState.playerNumber = PLAYER_ONE;
   onlineState.guestConnected = false;
+  onlineState.lastAppliedHostSyncVersion = 0;
   onlineState.roomRef = onlineState.db.ref(roomPath(roomCode));
 
   await onlineState.roomRef.set({
@@ -411,10 +442,12 @@ async function createOnlineRoom() {
     hostName: playerName,
     guestName: '',
     totalRounds: state.totalRounds,
+    gameMode: state.gameMode,
     selectedCats: state.selectedCats,
     safeMode: state.safeMode,
     ageConfirmed: state.ageConfirmed,
     hostSync: null,
+    guestActions: null,
     createdAt: firebase.database.ServerValue.TIMESTAMP,
     updatedAt: firebase.database.ServerValue.TIMESTAMP,
   });
@@ -462,6 +495,7 @@ async function joinOnlineRoom() {
   onlineState.isHost = false;
   onlineState.playerNumber = PLAYER_TWO;
   onlineState.guestConnected = true;
+  onlineState.lastAppliedHostSyncVersion = 0;
   onlineState.roomRef = roomRef;
 
   await roomRef.update({
@@ -501,7 +535,7 @@ function leaveOnlineRoom(resetMode = false) {
   onlineState.isHost = false;
   onlineState.playerNumber = null;
   onlineState.guestConnected = false;
-  onlineState.lastGuestActionKey = null;
+  onlineState.lastAppliedHostSyncVersion = 0;
 
   if (resetMode) onlineState.mode = 'local';
 
@@ -562,6 +596,24 @@ setCategoryPreset = function patchedSetCategoryPreset(preset) {
   maybeSendLobbyUpdate();
 };
 
+selectGameMode = function patchedSelectGameMode(button) {
+  if (isConnectedOnline() && !onlineState.isHost) {
+    showToast('Only the host can change game mode.');
+    return;
+  }
+  originalSelectGameMode(button);
+  maybeSendLobbyUpdate();
+};
+
+randomizeCategories = function patchedRandomizeCategories() {
+  if (isConnectedOnline() && !onlineState.isHost) {
+    showToast('Only the host can randomize categories.');
+    return;
+  }
+  originalRandomizeCategories();
+  maybeSendLobbyUpdate();
+};
+
 handleContentModeAction = function patchedHandleContentModeAction() {
   if (isConnectedOnline() && !onlineState.isHost) {
     showToast('Only the host can change content mode.');
@@ -594,7 +646,23 @@ startGame = function patchedStartGame() {
   }
 
   state.p1 = getOwnOnlineName() || state.p1;
+  onlineState.roomRef.child('guestActions').remove();
   originalStartGame();
+  maybeSendHostSnapshot();
+};
+
+rematchGame = function patchedRematchGame() {
+  if (!isConnectedOnline()) {
+    originalRematchGame();
+    return;
+  }
+  if (!onlineState.isHost) {
+    showToast('Only the host can start a rematch.');
+    return;
+  }
+
+  onlineState.roomRef.child('guestActions').remove();
+  originalRematchGame();
   maybeSendHostSnapshot();
 };
 
@@ -610,16 +678,30 @@ choose = function patchedChoose(player, side) {
     return;
   }
 
+  if (state.currentRoundResolved || state.currentChoices[player] !== null) {
+    return;
+  }
+
+  if (side === SKIP_CHOICE && state.effects.skips[player] <= 0) {
+    showToast(`${getPlayerName(player)} has no skips left.`);
+    return;
+  }
+
   if (onlineState.isHost) {
     originalChoose(player, side);
     maybeSendHostSnapshot();
   } else {
+    state.currentChoices[player] = side;
+    syncChoiceButtons();
     onlineState.roomRef.child('guestActions').push({
       type: 'choose',
+      player,
       side,
+      sessionId: state.gameSessionId || null,
+      roundSequence: state.roundSequence,
       createdAt: firebase.database.ServerValue.TIMESTAMP,
     });
-    showToast('Choice sent to host.');
+    showToast('Choice locked in. Waiting for host.');
   }
   syncOnlineDomState();
 };

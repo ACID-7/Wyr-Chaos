@@ -56,6 +56,12 @@
         <button class="mode-btn selected" type="button" data-mode="local" onclick="setPlayMode('local')">Local</button>
         <button class="mode-btn" type="button" data-mode="online" onclick="setPlayMode('online')">Online</button>
       </div>
+      <h3 class="setup-label">GAME MODE</h3>
+      <div class="game-mode-row">
+        <button class="game-mode-btn selected" type="button" data-game-mode="classic" onclick="selectGameMode(this)">Classic</button>
+        <button class="game-mode-btn" type="button" data-game-mode="chaos" onclick="selectGameMode(this)">Chaos+</button>
+        <button class="game-mode-btn" type="button" data-game-mode="streak" onclick="selectGameMode(this)">Streak</button>
+      </div>
 
       <div class="online-panel" id="onlinePanel">
         <div class="online-copy">
@@ -94,6 +100,7 @@
           <button class="preset-btn" type="button" onclick="setCategoryPreset('balanced')">Balanced</button>
           <button class="preset-btn" type="button" onclick="setCategoryPreset('safe')">Safe Only</button>
           <button class="preset-btn" type="button" onclick="setCategoryPreset('all')">All Chaos</button>
+          <button class="preset-btn" type="button" onclick="randomizeCategories()">Random Mix</button>
         </div>
       </div>
       <div class="category-grid" id="catGrid">

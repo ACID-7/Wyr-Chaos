@@ -10,6 +10,26 @@ const SAFE_CATEGORIES = ['couple', 'spicy', 'silly', 'deep', 'chaos', 'dare'];
 const ADULT_CATEGORIES = ['naughty', 'horny'];
 const DEFAULT_CATEGORIES = [...SAFE_CATEGORIES, ...ADULT_CATEGORIES];
 const SETTINGS_KEY = 'wyr_chaos_settings_v1';
+const GAME_MODES = {
+  classic: {
+    label: 'Classic',
+    description: 'Standard scoring with a balanced mix of special cards.',
+    specialRate: 1,
+    startingSkips: 0,
+  },
+  chaos: {
+    label: 'Chaos+',
+    description: 'More special rounds and one starting skip each.',
+    specialRate: 1.45,
+    startingSkips: 1,
+  },
+  streak: {
+    label: 'Streak',
+    description: 'Consecutive wins earn combo bonus points.',
+    specialRate: 1.1,
+    startingSkips: 0,
+  },
+};
 
 const state = {
   p1: 'Player 1',
@@ -24,6 +44,8 @@ const state = {
   currentChoices: { 1: null, 2: null },
   currentRoundResolved: false,
   pendingBonusCard: null,
+  currentPunishment: null,
+  lastPunishment: null,
   wheelUsedThisRound: false,
   selectedWheelPlayer: PLAYER_ONE,
   chaosLog: [],
@@ -34,6 +56,11 @@ const state = {
   ageConfirmed: false,
   safeMode: false,
   rerollUsedThisRound: false,
+  gameSessionId: null,
+  roundSequence: 0,
+  gameMode: 'classic',
+  winStreak: { 1: 0, 2: 0 },
+  lastRoundWinner: 0,
   effects: createEffectState(),
 };
 
@@ -108,6 +135,7 @@ function createSettingsSnapshot() {
     selectedCats: state.selectedCats,
     ageConfirmed: state.ageConfirmed,
     safeMode: state.safeMode,
+    gameMode: state.gameMode,
   };
 }
 
@@ -140,6 +168,12 @@ function sanitizeSelectedCategories(categories) {
 function syncRoundsUI() {
   document.querySelectorAll('[data-rounds]').forEach((node) => {
     node.classList.toggle('selected', Number.parseInt(node.dataset.rounds, 10) === state.totalRounds);
+  });
+}
+
+function syncGameModeUI() {
+  document.querySelectorAll('[data-game-mode]').forEach((node) => {
+    node.classList.toggle('selected', node.dataset.gameMode === state.gameMode);
   });
 }
 
@@ -204,6 +238,7 @@ function hydrateSetupFromSettings() {
   if (!saved) {
     syncSetupInputs();
     syncRoundsUI();
+    syncGameModeUI();
     syncContentModePill();
     syncCategoryUI();
     return;
@@ -215,9 +250,11 @@ function hydrateSetupFromSettings() {
   state.ageConfirmed = saved.ageConfirmed === true;
   state.safeMode = saved.safeMode === true;
   state.selectedCats = sanitizeSelectedCategories(saved.selectedCats);
+  state.gameMode = GAME_MODES[saved.gameMode] ? saved.gameMode : state.gameMode;
 
   syncSetupInputs();
   syncRoundsUI();
+  syncGameModeUI();
   syncContentModePill();
   syncCategoryUI();
 
@@ -273,8 +310,13 @@ function describeRoundChoices(q) {
   return 'Different choices locked in. Debate the split and award the point to the better case.';
 }
 
+function getQuestionPrompt(question) {
+  if (!question?.q) return '';
+  return question.q.endsWith('?') ? question.q : `${question.q}...`;
+}
+
 function getEffectNotices() {
-  const notes = [];
+  const notes = [`${GAME_MODES[state.gameMode].label}: ${GAME_MODES[state.gameMode].description}`];
   if (state.effects.pointMultiplierRounds > 0) {
     notes.push(`Chaos Multiplier active: wins are worth 2 points for ${state.effects.pointMultiplierRounds} more round${state.effects.pointMultiplierRounds === 1 ? '' : 's'}.`);
   }
@@ -289,6 +331,12 @@ function getEffectNotices() {
   }
   if (state.effects.chaosBomb) {
     notes.push('Chaos Bomb active: the next punishment hits both players.');
+  }
+  if (state.winStreak[PLAYER_ONE] >= 2) {
+    notes.push(`${state.p1} is on a ${state.winStreak[PLAYER_ONE]} round streak.`);
+  }
+  if (state.winStreak[PLAYER_TWO] >= 2) {
+    notes.push(`${state.p2} is on a ${state.winStreak[PLAYER_TWO]} round streak.`);
   }
   return notes;
 }
@@ -319,6 +367,31 @@ function applyRoundBasePoints(player) {
   return base;
 }
 
+function applyGameModeBonus(player) {
+  if (!player) return 0;
+
+  let bonus = 0;
+  if (state.gameMode === 'chaos' && state.round % 3 === 0) bonus++;
+  if (state.gameMode === 'streak' && state.winStreak[player] >= 2) bonus++;
+
+  if (bonus > 0) addPoints(player, bonus);
+  return bonus;
+}
+
+function recordRoundWinner(player) {
+  if (!player) {
+    state.winStreak[PLAYER_ONE] = 0;
+    state.winStreak[PLAYER_TWO] = 0;
+    state.lastRoundWinner = 0;
+    return;
+  }
+
+  const loser = otherPlayer(player);
+  state.winStreak[player] = state.lastRoundWinner === player ? state.winStreak[player] + 1 : 1;
+  state.winStreak[loser] = 0;
+  state.lastRoundWinner = player;
+}
+
 function pulseScoreCard(player) {
   const id = player === PLAYER_ONE ? 'scoreCard1' : 'scoreCard2';
   const el = document.getElementById(id);
@@ -328,15 +401,32 @@ function pulseScoreCard(player) {
 
 function getRoundCardType(question) {
   const rng = Math.random();
+  const modeBoost = GAME_MODES[state.gameMode]?.specialRate || 1;
+  const bonusThreshold = Math.max(0.6, 1 - (0.18 * modeBoost));
+  const punishmentThreshold = Math.max(0.45, 1 - (0.32 * modeBoost));
   if (question._cat === 'naughty' || question._cat === 'horny') return 'naughty';
   if (question._cat === 'deep') return 'deep';
-  if (rng > 0.82) return 'bonus';
-  if (rng > 0.68) return 'punishment';
+  if (rng > bonusThreshold) return 'bonus';
+  if (rng > punishmentThreshold) return 'punishment';
   return 'normal';
 }
 
 function getRandomItem(items) {
   return items[Math.floor(Math.random() * items.length)];
+}
+
+function ensureRoundPunishment() {
+  if (!state.currentPunishment) {
+    state.currentPunishment = { ...getRandomItem(PUNISHMENTS) };
+  }
+  return state.currentPunishment;
+}
+
+function syncBonusOverlayContent() {
+  if (!state.pendingBonusCard) return;
+  document.getElementById('bonusIcon').textContent = state.pendingBonusCard.icon;
+  document.getElementById('bonusName').textContent = state.pendingBonusCard.name;
+  document.getElementById('bonusDesc').textContent = state.pendingBonusCard.desc;
 }
 
 function renderChoicePanel(player) {
@@ -462,6 +552,25 @@ function setCategoryPreset(preset) {
   persistSettings();
 }
 
+function selectGameMode(button) {
+  const nextMode = button.dataset.gameMode;
+  if (!GAME_MODES[nextMode]) return;
+  state.gameMode = nextMode;
+  syncGameModeUI();
+  persistSettings();
+}
+
+function randomizeCategories() {
+  const categories = availableCategories();
+  const min = Math.min(categories.length, 3);
+  const max = Math.min(categories.length, 5);
+  const total = Math.floor(Math.random() * (max - min + 1)) + min;
+  state.selectedCats = shuffle([...categories]).slice(0, total);
+  syncCategoryUI();
+  persistSettings();
+  showToast(`Random loadout picked: ${state.selectedCats.length} categories.`);
+}
+
 function buildPool() {
   let pool = [];
   state.selectedCats.forEach((cat) => {
@@ -484,11 +593,14 @@ function resetRunState() {
   state.score1 = 0;
   state.score2 = 0;
   state.round = 0;
+  state.roundSequence = 0;
   state.currentQ = null;
   state.currentCardType = 'normal';
   state.currentChoices = { 1: null, 2: null };
   state.currentRoundResolved = false;
   state.pendingBonusCard = null;
+  state.currentPunishment = null;
+  state.lastPunishment = null;
   state.wheelUsedThisRound = false;
   state.selectedWheelPlayer = PLAYER_ONE;
   state.chaosLog = [];
@@ -496,12 +608,17 @@ function resetRunState() {
   state.statsBonusCards = 0;
   state.statsPunishments = 0;
   state.rerollUsedThisRound = false;
+  state.gameSessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  state.winStreak = { 1: 0, 2: 0 };
+  state.lastRoundWinner = 0;
   state.effects = createEffectState();
 }
 
 function startGame() {
-  const p1v = document.getElementById('p1name').value.trim();
-  const p2v = document.getElementById('p2name').value.trim();
+  const p1Input = document.getElementById('p1name');
+  const p2Input = document.getElementById('p2name');
+  const p1v = (p1Input.disabled ? state.p1 : p1Input.value).trim();
+  const p2v = (p2Input.disabled ? state.p2 : p2Input.value).trim();
 
   if (!p1v) return showToast('Enter Player 1 name.');
   if (!p2v) return showToast('Enter Player 2 name.');
@@ -510,8 +627,24 @@ function startGame() {
   state.p1 = p1v;
   state.p2 = p2v;
   resetRunState();
+  state.effects.skips[PLAYER_ONE] = GAME_MODES[state.gameMode].startingSkips;
+  state.effects.skips[PLAYER_TWO] = GAME_MODES[state.gameMode].startingSkips;
   state.questions = buildPool();
   persistSettings();
+
+  document.getElementById('hdr-p1').textContent = state.p1;
+  document.getElementById('hdr-p2').textContent = state.p2;
+  document.getElementById('total-rounds').textContent = String(state.totalRounds);
+
+  showScreen('screen-game');
+  nextRound();
+}
+
+function rematchGame() {
+  resetRunState();
+  state.effects.skips[PLAYER_ONE] = GAME_MODES[state.gameMode].startingSkips;
+  state.effects.skips[PLAYER_TWO] = GAME_MODES[state.gameMode].startingSkips;
+  state.questions = buildPool();
 
   document.getElementById('hdr-p1').textContent = state.p1;
   document.getElementById('hdr-p2').textContent = state.p2;
@@ -528,10 +661,12 @@ function nextRound() {
   }
 
   state.round++;
+  state.roundSequence++;
   state.statsRoundsPlayed = state.round;
   state.currentRoundResolved = false;
   state.currentChoices = { 1: null, 2: null };
   state.pendingBonusCard = null;
+  state.currentPunishment = null;
   state.wheelUsedThisRound = false;
   state.selectedWheelPlayer = PLAYER_ONE;
   state.rerollUsedThisRound = false;
@@ -572,7 +707,7 @@ function renderRound(question, cardType) {
       <div class="question-area">
         <span class="q-round-tag">Round ${state.round} of ${state.totalRounds} · ${(CAT_EMOJIS[question._cat] || '🎲')} ${question._cat.toUpperCase()}</span>
         <span class="q-emoji">${emoji}</span>
-        <p class="q-text">${question.q}...</p>
+        <p class="q-text">${escapeHtml(getQuestionPrompt(question))}</p>
       </div>
       <div class="choice-grid">
         ${renderChoicePanel(PLAYER_ONE)}
@@ -641,9 +776,9 @@ function choose(player, side) {
 
 function showResultArea() {
   const question = state.currentQ;
-  const punishment = getRandomItem(PUNISHMENTS);
-  const punishmentText = escapeJsSingleQuoted(punishment.txt);
-  const punishmentIcon = escapeJsSingleQuoted(punishment.icon);
+  const punishment = state.currentCardType === 'punishment' ? ensureRoundPunishment() : null;
+  const punishmentText = punishment ? escapeJsSingleQuoted(punishment.txt) : '';
+  const punishmentIcon = punishment ? escapeJsSingleQuoted(punishment.icon) : '';
   const resultArea = document.getElementById('resultArea');
   const c1 = state.currentChoices[PLAYER_ONE];
   const c2 = state.currentChoices[PLAYER_TWO];
@@ -716,14 +851,12 @@ function showResultArea() {
 
 function revealBonus() {
   if (!state.pendingBonusCard) {
-    state.pendingBonusCard = getRandomItem(BONUS_CARDS);
+    state.pendingBonusCard = { ...getRandomItem(BONUS_CARDS) };
     state.statsBonusCards++;
     logChaos(`Bonus Card: ${state.pendingBonusCard.name} - ${normalizeText(state.pendingBonusCard.desc, 60)}`);
   }
 
-  document.getElementById('bonusIcon').textContent = state.pendingBonusCard.icon;
-  document.getElementById('bonusName').textContent = state.pendingBonusCard.name;
-  document.getElementById('bonusDesc').textContent = state.pendingBonusCard.desc;
+  syncBonusOverlayContent();
   document.getElementById('bonusOverlay').classList.add('show');
   showResultArea();
 }
@@ -761,6 +894,13 @@ function triggerPunishment(player, txt, icon) {
 
   state.statsPunishments++;
   logChaos(`Punishment: ${normalizeText(txt)}`);
+  state.lastPunishment = {
+    icon,
+    text: txt,
+    players: [...activePlayers],
+    forgiven: false,
+    round: state.round,
+  };
 
   document.getElementById('punishIcon').textContent = icon;
   document.getElementById('punishPlayer').textContent = activePlayers.join(' + ');
@@ -841,8 +981,14 @@ function applyBonusCardToWinner(player) {
       break;
     }
     case 'FORGIVENESS CARD':
-      state.effects.immunity[player]++;
-      summary = `${getPlayerName(player)} turned Forgiveness Card into a fresh immunity charge.`;
+      if (state.lastPunishment && !state.lastPunishment.forgiven) {
+        state.lastPunishment.forgiven = true;
+        state.statsPunishments = Math.max(0, state.statsPunishments - 1);
+        summary = `${getPlayerName(player)} wiped the last punishment from the chaos log.`;
+      } else {
+        state.effects.immunity[player]++;
+        summary = `${getPlayerName(player)} banked a fallback immunity because there was nothing to forgive.`;
+      }
       break;
     case 'CHAOS BOMB':
       state.effects.chaosBomb = true;
@@ -863,13 +1009,17 @@ function awardPoint(player) {
   state.currentRoundResolved = true;
 
   resolveDoubleOrNothing(player);
+  recordRoundWinner(player);
 
   let toast = 'Round tied. No points awarded.';
   if (player === PLAYER_ONE || player === PLAYER_TWO) {
     const basePoints = applyRoundBasePoints(player);
+    const modeBonus = applyGameModeBonus(player);
     applyBonusCardToWinner(player);
     pulseScoreCard(player);
-    toast = `${getPlayerName(player)} takes the round${basePoints > 1 ? ` for ${basePoints} points` : ''}.`;
+    const totalPoints = basePoints + modeBonus;
+    toast = `${getPlayerName(player)} takes the round${totalPoints > 1 ? ` for ${totalPoints} points` : ''}.`;
+    if (modeBonus > 0) logChaos(`${getPlayerName(player)} earned a ${GAME_MODES[state.gameMode].label} bonus point.`);
   } else if (state.pendingBonusCard) {
     logChaos(`Bonus Card ${state.pendingBonusCard.name} expired on a tied round.`);
     state.pendingBonusCard = null;
@@ -888,8 +1038,14 @@ function awardPoint(player) {
 function endGame() {
   document.getElementById('progress-fill').style.width = '100%';
   showScreen('screen-end');
-  saveToHistory(state.p1, state.score1, state.p2, state.score2);
+  const shouldSaveHistory = typeof onlineState === 'undefined' || !isConnectedOnline() || onlineState.isHost;
+  if (shouldSaveHistory) saveToHistory(state.p1, state.score1, state.p2, state.score2);
   launchConfetti();
+  const rematchButton = document.querySelector('.btn-play-again');
+  if (rematchButton) {
+    rematchButton.textContent = 'Rematch';
+    rematchButton.setAttribute('onclick', 'rematchGame()');
+  }
 
   let winner = null;
   let trophy = '🤝';
