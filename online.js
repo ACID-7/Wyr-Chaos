@@ -16,6 +16,7 @@ const onlineState = {
   guestConnected: false,
   applyingRemote: false,
   lastAppliedHostSyncVersion: 0,
+  pendingLocalChoice: null,
   status: 'Online mode is off.',
 };
 
@@ -333,6 +334,40 @@ function resetOnlineRoomState() {
   onlineState.playerNumber = null;
   onlineState.guestConnected = false;
   onlineState.lastAppliedHostSyncVersion = 0;
+  onlineState.pendingLocalChoice = null;
+}
+
+function clearPendingLocalChoiceIfStale() {
+  const pending = onlineState.pendingLocalChoice;
+  if (!pending) return;
+
+  const sameSession = pending.sessionId === (state.gameSessionId || null);
+  const sameRound = pending.roundSequence === state.roundSequence;
+  const acceptedRemotely = state.currentChoices[pending.player] === pending.side;
+  if (!sameSession || !sameRound || acceptedRemotely) {
+    onlineState.pendingLocalChoice = null;
+  }
+}
+
+function preservePendingLocalChoice(snapshotState) {
+  const pending = onlineState.pendingLocalChoice;
+  if (!pending || onlineState.isHost) return;
+
+  const sameSession = pending.sessionId === (snapshotState.gameSessionId || null);
+  const sameRound = pending.roundSequence === snapshotState.roundSequence;
+  if (!sameSession || !sameRound || snapshotState.currentRoundResolved) {
+    onlineState.pendingLocalChoice = null;
+    return;
+  }
+
+  if (snapshotState.currentChoices?.[pending.player] === pending.side) {
+    onlineState.pendingLocalChoice = null;
+    return;
+  }
+
+  if (snapshotState.currentChoices?.[pending.player] === null) {
+    state.currentChoices[pending.player] = pending.side;
+  }
 }
 
 function applyRemoteSnapshot(snapshot) {
@@ -342,6 +377,7 @@ function applyRemoteSnapshot(snapshot) {
   onlineState.applyingRemote = true;
   onlineState.lastAppliedHostSyncVersion = snapshot.version;
   applyClonedState(snapshot.state);
+  preservePendingLocalChoice(snapshot.state);
 
   if (snapshot.ui.screen === 'screen-game') {
     originalShowScreen('screen-game');
@@ -374,6 +410,7 @@ function applyRemoteSnapshot(snapshot) {
   document.getElementById('closeSpinner').style.display = overlays.spinner?.closeVisible || 'none';
 
   syncOnlineDomState();
+  clearPendingLocalChoiceIfStale();
   onlineState.applyingRemote = false;
 }
 
@@ -443,6 +480,7 @@ function attachRoomListeners() {
     syncContentModePill();
     syncSetupFieldsForMode();
     updateStartButtonState();
+    clearPendingLocalChoiceIfStale();
 
     if (room.hostSync?.version) applyRemoteSnapshot(room.hostSync);
   });
@@ -484,6 +522,7 @@ async function createOnlineRoom() {
     onlineState.playerNumber = PLAYER_ONE;
     onlineState.guestConnected = false;
     onlineState.lastAppliedHostSyncVersion = 0;
+    onlineState.pendingLocalChoice = null;
     onlineState.roomRef = onlineState.db.ref(roomPath(roomCode));
 
     await withFirebaseTimeout(onlineState.roomRef.set({
@@ -558,6 +597,7 @@ async function joinOnlineRoom() {
     onlineState.playerNumber = PLAYER_TWO;
     onlineState.guestConnected = true;
     onlineState.lastAppliedHostSyncVersion = 0;
+    onlineState.pendingLocalChoice = null;
     onlineState.roomRef = roomRef;
 
     await withFirebaseTimeout(roomRef.update({
@@ -755,6 +795,12 @@ choose = function patchedChoose(player, side) {
     maybeSendHostSnapshot();
   } else {
     state.currentChoices[player] = side;
+    onlineState.pendingLocalChoice = {
+      player,
+      side,
+      sessionId: state.gameSessionId || null,
+      roundSequence: state.roundSequence,
+    };
     syncChoiceButtons();
     onlineState.roomRef.child('guestActions').push({
       type: 'choose',
